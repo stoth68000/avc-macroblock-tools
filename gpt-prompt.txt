@@ -1,0 +1,412 @@
+Play the role of a senior C systems engineer with deep expertise in H.264/AVC, MPEG-TS, ISO/IEC 14496-10, FFmpeg/libavcodec internals, bitstream parsing, and broadcast stream analysis.
+
+I am building a production-quality AVC/H.264 syntax parser in C for use inside a transport-stream probe/analyzer. The goal is not necessarily to reconstruct pixels, but to deeply inspect AVC bitstreams carried in MPEG-TS and extract useful structural metadata.
+
+The parser should eventually handle:
+
+- Annex B AVC NAL parsing
+- EBSP-to-RBSP conversion
+- NAL classification
+- SPS parsing
+- PPS parsing
+- VUI parsing where useful
+- SEI parsing where useful, especially recovery point and timing-related SEI
+- AUD parsing
+- slice header parsing
+- access-unit boundary detection
+- IDR/non-IDR classification
+- frame_num, POC, field/MBAFF-related fields
+- reference picture behavior
+- safe random-access / safe decode-start analysis
+- macroblock-layer syntax where practical
+- CAVLC residual parsing if worthwhile
+- CABAC residual parsing only if the engineering tradeoff makes sense
+
+The previous design conclusion was that a complete parser down to macroblock residual CABAC/CAVLC decoding is effectively the entropy-decoding half of an AVC decoder. CABAC in particular requires arithmetic decoding, context initialization, hundreds of context models, neighboring macroblock state, syntax-element binarization, and residual significance/level decoding.
+
+The recommended implementation stages were:
+
+1. Build a clean bitreader:
+   - read bits
+   - read unsigned Exp-Golomb ue(v)
+   - read signed Exp-Golomb se(v)
+   - handle RBSP trailing bits correctly
+
+2. Build Annex B NAL extraction:
+   - detect 00 00 01 and 00 00 00 01 start codes
+   - parse NAL headers
+   - remove emulation-prevention bytes
+   - produce RBSP buffers
+
+3. Parse SPS:
+   - profile_idc
+   - constraint flags
+   - level_idc
+   - seq_parameter_set_id
+   - chroma_format_idc
+   - bit depths
+   - log2_max_frame_num_minus4
+   - pic_order_cnt_type
+   - log2_max_pic_order_cnt_lsb_minus4
+   - max_num_ref_frames
+   - picture dimensions
+   - frame_mbs_only_flag
+   - mb_adaptive_frame_field_flag
+   - cropping
+   - VUI presence
+
+4. Parse PPS:
+   - pic_parameter_set_id
+   - seq_parameter_set_id
+   - entropy_coding_mode_flag
+   - bottom_field_pic_order_in_frame_present_flag
+   - slice groups / FMO
+   - default reference counts
+   - weighted prediction flags
+   - initial QP values
+   - deblocking control
+   - constrained intra prediction
+   - redundant picture count
+   - transform_8x8_mode_flag
+   - scaling matrix presence
+
+5. Parse slice headers using active SPS/PPS:
+   - first_mb_in_slice
+   - slice_type
+   - pic_parameter_set_id
+   - frame_num
+   - field_pic_flag
+   - bottom_field_flag
+   - idr_pic_id
+   - pic_order_cnt_lsb
+   - delta_pic_order_cnt fields
+   - redundant_pic_cnt
+   - direct_spatial_mv_pred_flag
+   - reference index counts
+   - cabac_init_idc
+   - slice_qp_delta
+   - deblocking filter fields
+
+6. Implement access-unit detection by comparing VCL slice identity fields:
+   - frame_num
+   - pic_parameter_set_id
+   - field_pic_flag
+   - bottom_field_flag
+   - nal_ref_idc zero/nonzero state
+   - pic_order_cnt_lsb
+   - delta_pic_order_cnt_bottom
+   - delta_pic_order_cnt[0]
+   - delta_pic_order_cnt[1]
+   - IDR vs non-IDR
+   - idr_pic_id
+
+7. Add macroblock-layer parsing only after slice parsing is solid:
+   - mb_skip_run or mb_skip_flag
+   - mb_type
+   - sub_mb_type
+   - intra prediction modes
+   - coded_block_pattern
+   - transform_size_8x8_flag
+   - mb_qp_delta
+
+8. Add CAVLC residual parsing only if needed:
+   - coeff_token
+   - trailing_ones_sign_flag
+   - level_prefix
+   - level_suffix
+   - total_zeros
+   - run_before
+   - static VLC tables
+
+9. Treat CABAC as a major separate subsystem:
+   - arithmetic decoder state
+   - codIRange / codIOffset
+   - rangeLPS tables
+   - MPS/LPS transitions
+   - context initialization from slice type, QP, and cabac_init_idc
+   - context index derivation
+   - macroblock neighbor availability
+   - syntax-element binarization
+   - significant_coeff_flag
+   - last_significant_coeff_flag
+   - coeff_abs_level_minus1
+   - bypass and terminate bins
+
+Important engineering preference:
+
+For a production MPEG-TS probe, prioritize a robust syntax analyzer over a full residual decoder.
+The most valuable early deliverable is:
+
+- NAL classification
+- SPS/PPS/VUI/SEI parsing
+- slice-header parsing
+- AU boundary detection
+- IDR/recovery-point detection
+- open-GOP / random-access safety analysis
+- JSON metadata emission
+
+Only move into macroblock residual CAVLC/CABAC parsing if there is a clear operational need
+for coefficient-level inspection.
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+Start by proposing the exact file layout, public structs, parser callback API, and first compilable milestone.
+
+-- Second prompt
+
+The tool is great.
+
+Go ahead and add CABAC and CAVLC macroblock decoding. Add any callbacks that make sense.
+
+Move into macroblock residual CAVLC/CABAC parsing and coefficient-level inspection.
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+-- third prompt.
+
+I see some TODO notes in parse_cabac_slice_data().
+
+ /*
+     * TODO(ISO/IEC 14496-10 9.3.3.1 and 7.3.5): decode mb_skip_flag,
+     * mb_type, coded_block_pattern, significant_coeff_flag,
+     * last_significant_coeff_flag, coeff_abs_level_minus1, bypass signs,
+     * and terminate bins with neighbor-derived ctxIdx values.
+     */
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- fourth prompt
+
+I see some TODO notes in parse_cabac_slice_data().
+
+        /*
+         * TODO(ISO/IEC 14496-10 7.3.5 and 9.3.3.1): continue with
+         * transform_size_8x8_flag, coded_block_pattern, mb_qp_delta,
+         * significant_coeff_flag, last_significant_coeff_flag,
+         * coeff_abs_level_minus1, and bypass-coded coefficient signs. These
+         * require macroblock-type-specific prediction parsing plus neighboring
+         * macroblock state for correct ctxIdxInc derivation. CABAC helper
+         * functions for CBP and coefficient bins are available in avc_cabac.c.
+         */
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- fifth prompt
+
+I see some TODO notes in parse_cabac_slice_data().
+
+        /*
+         * TODO(ISO/IEC 14496-10 7.3.5): parse mb_pred/sub_mb_pred before
+         * consuming CBP/residual bins. The decoder now has neighbor state and
+         * CABAC helpers for transform_size_8x8_flag, coded_block_pattern,
+         * mb_qp_delta, significant_coeff_flag, last_significant_coeff_flag,
+         * coeff_abs_level_minus1, and bypass signs, but those fields are not
+         * bitstream-adjacent until prediction syntax has been walked.
+         */
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- fifth prompt
+
+I see some TODO notes in cabac_emit_first_luma_residual().
+
+    /*
+     * TODO(ISO/IEC 14496-10 9.3.3.1.1.11-15): the context bases below are
+     * for a staged luma 4x4 coefficient inspection path. Full residual()
+     * integration must select bases by block category, field/frame scan, and
+     * transform size.
+     */
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- sixth prompt
+
+I see todos in the cabac decoding path. Go ahead and add any remaining dependencies
+so the code can fully parse I frames, including I_PCM, 8x8 transforms, chroma residuals etc.
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+
+--- seventh prompt
+
+I see todos in parse_cabac_slice_data().
+
+note(callbacks, opaque, "TODO 7.3.5: inter mb_pred/sub_mb_pred parsing required before CBP/residual bins");
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- eighth prompt
+I see a todo in cabac_parse_p_inter_mb_pred
+
+ /*
+     * TODO(ISO/IEC 14496-10 7.3.5.2/9.3.3.1): derive ref_idx and MVD
+     * contexts from neighboring partitions and sub-partition shape. This
+     * consumes the syntax in order for P macroblocks, but uses conservative
+     * zero-neighbor context inputs until partition-level state is tracked.
+     */
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- nineth prompt
+I see a todo in parse_cabac_slice_data()
+
+            note(callbacks, opaque, "TODO 7.3.5: B-slice inter mb_pred/sub_mb_pred parsing required before CBP/residual bins");
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- tenth prompt.
+
+Is this a problem that needs to be addressed?
+
+   } else if (i_info.pred_kind == AVC_MB_PRED_UNKNOWN) {
+            note(callbacks, opaque, "TODO 7.3.5: unsupported macroblock type before CBP/residual bins");
+            mb_addr++;
+            break;
+        }
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- 11 prompt.
+
+I see a todo in cabac_parse_b_inter_mb_pred()
+
+    /*
+     * TODO(ISO/IEC 14496-10 8.4.1.2): direct-mode motion vector derivation is
+     * not reconstructed; direct partitions are identified and consume no
+     * explicit ref_idx/MVD syntax.
+     */
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- 12 prompt
+
+I see a todo in parse_cavlc_slice_data()
+
+        /*
+         * TODO(ISO/IEC 14496-10 7.3.5): parse mb_pred, sub_mb_pred,
+         * coded_block_pattern, transform_size_8x8_flag, mb_qp_delta, and
+         * residual(). The CAVLC residual block decoder is available in
+         * avc_cavlc_read_residual_block once coded block presence is known.
+         */
+        note(callbacks, opaque, "TODO 7.3.5: macroblock prediction/residual syntax not yet fully walked");
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- 13 prompt
+
+I see a todo in the cavlc areas, in parse_cavlc_slice_data().
+
+        } else if (slice->slice_kind == AVC_SLICE_B) {
+            note(callbacks, opaque, "TODO 7.3.4: B-slice mb_skip_run/direct modes need neighbor state");
+            break;
+        }
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+---- 14 prompt
+
+I see a series of TODOs in avc_cabac.C
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+-- 15 prompt
+
+in read_coeff_token_limited I see a todo.
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- 16 prompt
+
+I see a todo in avc_cavlc_read_residual_block()
+
+   /*
+     * TODO(ISO/IEC 14496-10 9.2.3/9.2.4): decode total_zeros and run_before
+     * VLC tables. For now, levels are reported in coded order with run 0.
+     */
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- 17
+
+/* TODO: ref_pic_list_modification, pred_weight_table, dec_ref_pic_marking. */
+
+-- prompt
+Implement the CAVLC neighbor state for nC
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+--- prompt
+
+My goal is to inspect any macroblock and compare visually the content of the macroblock with elecards streameye studios
+macroblock inspection.
+
+Is there anything missing in this project that would prevent me from looking up a macrblock address then
+comparising motion vectors and any residual agains a commercial tool?
+
+--- prompt
+
+GO ahead and implement anything that's necessary so that I can compare against streameye.
+
+Please help me continue from this design. I want practical C code, clean data structures,
+and production-oriented decisions. Prefer complete compilable modules over pseudocode where possible.
+When something is too large to implement in one answer, split it into staged files and clearly mark
+TODOs that map back to ISO/IEC 14496-10 syntax elements.
+
+-- prompt
+
+Implement DPB/reference-list state, final MV prediction, 
+
