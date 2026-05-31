@@ -42,6 +42,25 @@ static void on_note_bridge(void *opaque, const char *message)
     }
 }
 
+static void on_sei_bridge(void *opaque, const avc_sei_event_t *sei)
+{
+    avc_parser_t *parser = (avc_parser_t *)opaque;
+    if (parser->callbacks.on_sei) {
+        parser->callbacks.on_sei(parser->opaque, sei);
+    }
+}
+
+static const avc_sps_t *active_sps(const avc_parser_t *parser)
+{
+    if (!parser->active_sps_valid || parser->active_sps_id >= AVC_MAX_SPS) {
+        return NULL;
+    }
+    if (!parser->sets.sps[parser->active_sps_id].present) {
+        return NULL;
+    }
+    return &parser->sets.sps[parser->active_sps_id];
+}
+
 void avc_parser_init(avc_parser_t *parser, avc_parser_callbacks_t callbacks, void *opaque)
 {
     memset(parser, 0, sizeof(*parser));
@@ -82,6 +101,8 @@ int avc_parser_parse_annexb(avc_parser_t *parser, const uint8_t *data, size_t si
             avc_sps_t sps;
             if (avc_parse_sps(rbsp, rbsp_size, &sps)) {
                 parser->sets.sps[sps.seq_parameter_set_id] = sps;
+                parser->active_sps_id = (uint8_t)sps.seq_parameter_set_id;
+                parser->active_sps_valid = 1;
                 if (parser->callbacks.on_sps) {
                     parser->callbacks.on_sps(parser->opaque, &sps);
                 }
@@ -90,13 +111,20 @@ int avc_parser_parse_annexb(avc_parser_t *parser, const uint8_t *data, size_t si
             }
         } else if (nal.header.nal_unit_type == AVC_NAL_PPS) {
             avc_pps_t pps;
-            if (avc_parse_pps(rbsp, rbsp_size, &pps)) {
+            if (avc_parse_pps_with_sets(rbsp, rbsp_size, &parser->sets, &pps)) {
                 parser->sets.pps[pps.pic_parameter_set_id] = pps;
                 if (parser->callbacks.on_pps) {
                     parser->callbacks.on_pps(parser->opaque, &pps);
                 }
             } else {
                 report_error(parser, "failed to parse PPS", nal.offset);
+            }
+        } else if (nal.header.nal_unit_type == AVC_NAL_SEI) {
+            avc_sei_callbacks_t sei_callbacks;
+            sei_callbacks.on_sei = on_sei_bridge;
+            if (!avc_parse_sei_rbsp(rbsp, rbsp_size, &parser->sets,
+                                    active_sps(parser), sei_callbacks, parser)) {
+                report_error(parser, "failed to parse SEI", nal.offset);
             }
         } else if (nal.header.nal_unit_type == AVC_NAL_SLICE_NON_IDR || nal.header.nal_unit_type == AVC_NAL_SLICE_IDR) {
             avc_slice_header_t slice;
@@ -105,6 +133,8 @@ int avc_parser_parse_annexb(avc_parser_t *parser, const uint8_t *data, size_t si
                 const avc_pps_t *pps = &parser->sets.pps[slice.pic_parameter_set_id];
                 const avc_sps_t *sps = &parser->sets.sps[pps->seq_parameter_set_id];
 
+                parser->active_sps_id = (uint8_t)pps->seq_parameter_set_id;
+                parser->active_sps_valid = 1;
                 avc_dpb_build_ref_lists(&parser->dpb, &slice, &ref_lists);
                 if (parser->callbacks.on_slice) {
                     parser->callbacks.on_slice(parser->opaque, &slice);

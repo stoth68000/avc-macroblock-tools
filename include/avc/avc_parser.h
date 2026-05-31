@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "avc/avc_dpb.h"
 #include "avc/avc_macroblock.h"
+#include "avc/avc_sei.h"
 #include "avc/avc_syntax.h"
 
 typedef struct avc_parser avc_parser_t;
@@ -13,6 +14,7 @@ typedef struct {
     void (*on_nal)(void *opaque, const avc_nal_unit_t *nal);
     void (*on_sps)(void *opaque, const avc_sps_t *sps);
     void (*on_pps)(void *opaque, const avc_pps_t *pps);
+    void (*on_sei)(void *opaque, const avc_sei_event_t *sei);
     void (*on_slice)(void *opaque, const avc_slice_header_t *slice);
     void (*on_ref_lists)(void *opaque, const avc_slice_header_t *slice,
                          const avc_ref_list_state_t *lists);
@@ -27,6 +29,8 @@ typedef struct {
 struct avc_parser {
     avc_parameter_sets_t sets;
     avc_dpb_t dpb;
+    uint8_t active_sps_id;
+    uint8_t active_sps_valid;
     avc_parser_callbacks_t callbacks;
     void *opaque;
 };

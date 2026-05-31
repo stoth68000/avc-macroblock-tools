@@ -64,15 +64,52 @@ The optional `--mb` filter keeps slice/NAL context but limits macroblock, predic
 
 ## Staged TODOs
 
-- Complete SPS syntax: scaling matrices, high-profile edge cases, complete VUI/HRD
-- Complete PPS syntax: FMO/slice groups and scaling lists
-- Complete slice header syntax: advanced decoded-reference-picture-state reconstruction
-- Access-unit detection from VCL identity deltas
-- Recovery point and timing SEI parsing
-- Complete macroblock-layer syntax: top-right motion-vector predictor refinement and direct-mode MV derivation
-- Complete CAVLC residual integration: scan-table selection for all frame/field and transform cases
-- Complete CABAC: full standard context initialization table coverage and remaining exact ctxIdx derivation
-- StreamEye-style visual comparison: inverse quantization/transform, prediction pixels, and reconstructed macroblock samples
+Goal: compare macroblock, prediction, residual, and coefficient details against StreamEye Studio. The parser now emits enough syntax to start comparing simple progressive 4:2:0 streams, but the items below still block cell-for-cell parity on general AVC content.
+
+- Comparison-ready surfaces now present:
+  - SPS/PPS high-profile syntax, VUI/HRD, PPS FMO/scaling-list syntax, recovery/timing SEI, and slice-header reference-list syntax are parsed and surfaced.
+  - Macroblock events include entropy mode, skip state, `mb_field_decoding_flag`, `mb_type`, CBP, transform-8x8 flag, QP delta, derived `qp_y`, `qp_cb`, `qp_cr`, and I_PCM sample counts.
+  - `mb_pred` events emit intra prediction modes, ref_idx, MVD, MVP, final MV, direct flags, list masks, and sub-macroblock type slots for the currently modeled partition shapes.
+  - CAVLC and CABAC residual events emit block identity, total coefficient count, coefficient level, scan index, block-local coordinates, and macroblock-local coordinates. CAVLC also emits trailing-one, total-zero, and run-before values.
+  - Frame/field scan selection is centralized for CAVLC and CABAC residual coordinate placement, including 4x4, 8x8, AC-only, chroma DC, transform-bypass, and parsed/inferred MBAFF `mb_field_decoding_flag` scan modes.
+
+- First StreamEye parity targets:
+  - Add a small corpus of StreamEye-exported fixtures: one progressive CAVLC I/P/B stream, one progressive CABAC I/P/B stream, one transform-8x8 stream, one Intra16x16 stream, and one chroma-residual-heavy stream.
+  - Stabilize the NDJSON schema around StreamEye table columns: picture identity, macroblock address, macroblock type name, partition/sub-partition geometry, ref picture identity/POC, ref_idx, MVP, MVD, final MV, CBP, QP, residual block kind/index, scan index, coefficient level, and coefficient x/y.
+  - Add a diff helper that compares this tool's NDJSON against StreamEye-exported values, with tolerances only where the standard permits equivalent representations.
+
+- Access-unit, picture-state, and reference identity blockers:
+  - Detect access-unit boundaries from VCL identity deltas instead of treating NAL order alone as picture order.
+  - Complete POC derivation for every POC type and expose picture/frame/field identity in macroblock and prediction output.
+  - Complete decoded-reference-picture marking and DPB behavior: frame-num wrap/gaps, sliding-window behavior, MMCO 4/5/6 details, max-long-term handling, field pairs/complementary fields, and long-term refs.
+  - Make FMO slice-group maps drive macroblock address progression; PPS syntax is parsed, but slice-data walking still assumes raster macroblock order.
+  - Make field pictures and MBAFF affect neighbor availability and reference-picture identity everywhere. Residual scan selection uses field/MBAFF flags, but neighbor derivation is still raster-frame oriented.
+
+- Macroblock prediction and motion-vector blockers:
+  - Replace the current four-slot `mb_pred` event shape with exact macroblock partition and sub-partition geometry, including P_8x8/B_8x8 8x4, 4x8, and 4x4 sub-partitions.
+  - Store and emit ref_idx, MVD, MVP, and final MV per actual sub-partition for L0/L1 so StreamEye motion-vector tables can be compared cell-for-cell.
+  - Complete B-slice macroblock type geometry for every B_Direct/B_L0/B_L1/B_Bi 16x16, 16x8, 8x16, and 8x8 form.
+  - Finish direct-mode derivation by retaining colocated reference-picture macroblock motion maps in the DPB; current temporal-direct output cannot be exact without that state.
+  - Refine top-right/top-left MVP candidate selection at sub-partition granularity, including unavailable-neighbor rules for FMO, field, and MBAFF pictures.
+
+- CAVLC residual and coefficient blockers:
+  - Complete `nC` derivation for FMO, MBAFF, field pictures, and all unavailable-neighbor cases. Intra-macroblock luma/chroma and 8x8-transform nonzero propagation are wired for raster progressive cases.
+  - Verify `total_zeros`, `run_before`, trailing-one sign handling, AC-only scan offsets, and chroma DC placement against standard vectors and StreamEye output.
+  - Carry `ChromaArrayType` and `separate_colour_plane_flag` through residual walking, not just SPS/PPS parsing.
+
+- CABAC residual and context blockers:
+  - Replace the sparse CABAC context initialization with complete standard initialization tables for I/P/B slices and every `cabac_init_idc`.
+  - Complete ctxIdxInc derivation for `mb_skip_flag`, `mb_type`, `sub_mb_type`, `ref_idx`, `mvd`, CBP, `transform_size_8x8_flag`, coded-block flags, significant/last-significant flags, `coeff_abs_level_minus1`, and bypass signs.
+  - Make CABAC residual decoding exact for every block category, scan position, field/MBAFF mode, transform size, chroma format, and coded-block-neighbor condition.
+  - Add tests that compare CABAC bin decisions, context state transitions, and decoded syntax elements against known-good traces.
+
+- High-profile, chroma, and bit-depth blockers:
+  - Complete 4:2:2 and 4:4:4 chroma residual block layout, chroma QP derivation, scaling-list application metadata, bit depths above 8, and transform-bypass syntax/output.
+  - Handle separate colour planes as independent luma-style planes in macroblock prediction and residual output.
+
+- Pixel-level parity, if visual reconstruction is required:
+  - Implement inverse quantization, inverse transform, intra/inter prediction samples, reconstruction, DPB sample storage, and deblocking.
+  - Keep this separate from syntax-number comparison so macroblock/residual/coefficient diffing remains useful before full pixel reconstruction exists.
 
 ## Current Macroblock/Entropy Boundary
 

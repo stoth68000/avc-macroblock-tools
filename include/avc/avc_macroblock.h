@@ -19,7 +19,11 @@ typedef struct {
     uint32_t coded_block_pattern_luma;
     uint32_t coded_block_pattern_chroma;
     int32_t mb_qp_delta;
+    int32_t qp_y;
+    int32_t qp_cb;
+    int32_t qp_cr;
     int skipped;
+    int mb_field_decoding_flag;
     int transform_size_8x8_flag;
     int pcm_sample_bits_luma;
     int pcm_sample_bits_chroma;
@@ -72,6 +76,8 @@ typedef struct {
     avc_residual_kind_t block_kind;
     unsigned block_index;
     avc_mb_entropy_t entropy;
+    unsigned coeff_mb_x[AVC_CAVLC_MAX_COEFFS];
+    unsigned coeff_mb_y[AVC_CAVLC_MAX_COEFFS];
     avc_cavlc_block_t block;
     avc_cabac_residual_block_t cabac_block;
 } avc_residual_event_t;

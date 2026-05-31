@@ -25,6 +25,8 @@ typedef struct {
     unsigned max_coeff;
     unsigned total_coeff;
     int coeff_level[64];
+    unsigned coeff_x[64];
+    unsigned coeff_y[64];
     uint8_t significant[64];
     uint8_t last_significant[64];
 } avc_cabac_residual_block_t;
@@ -64,6 +66,9 @@ int avc_cabac_decode_rem_intra_pred_mode(avc_cabac_decoder_t *cabac,
                                          unsigned *mode);
 int avc_cabac_decode_intra_chroma_pred_mode(avc_cabac_decoder_t *cabac,
                                             unsigned *mode);
+int avc_cabac_decode_mb_field_decoding_flag(avc_cabac_decoder_t *cabac,
+                                            int left_available, int left_field,
+                                            int top_available, int top_field);
 int avc_cabac_decode_ref_idx_l0(avc_cabac_decoder_t *cabac,
                                 int left_nonzero, int top_nonzero,
                                 unsigned *ref_idx);

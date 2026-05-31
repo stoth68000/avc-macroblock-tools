@@ -2,8 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
+#include <getopt.h>
 
-typedef struct {
+typedef struct
+{
+    const char *input;
     int filter_mb;
     uint32_t mb_address;
 } probe_options_t;
@@ -34,10 +38,43 @@ static void on_sps(void *opaque, const avc_sps_t *sps)
 static void on_pps(void *opaque, const avc_pps_t *pps)
 {
     (void)opaque;
-    printf("{\"event\":\"pps\",\"id\":%u,\"sps_id\":%u,\"cabac\":%u,\"slice_groups_minus1\":%u,\"deblocking_control\":%u,\"transform_8x8\":%u}\n",
+    printf("{\"event\":\"pps\",\"id\":%u,\"sps_id\":%u,\"cabac\":%u,\"slice_groups_minus1\":%u,\"slice_group_map_type\":%u,\"pic_scaling_matrix_present\":%u,\"deblocking_control\":%u,\"transform_8x8\":%u,\"second_chroma_qp_index_offset\":%d}\n",
            pps->pic_parameter_set_id, pps->seq_parameter_set_id,
            pps->entropy_coding_mode_flag, pps->num_slice_groups_minus1,
-           pps->deblocking_filter_control_present_flag, pps->transform_8x8_mode_flag);
+           pps->slice_group_map_type, pps->pic_scaling_matrix_present_flag,
+           pps->deblocking_filter_control_present_flag, pps->transform_8x8_mode_flag,
+           pps->second_chroma_qp_index_offset);
+}
+
+static void on_sei(void *opaque, const avc_sei_event_t *sei)
+{
+    (void)opaque;
+    if (sei->payload_type == AVC_SEI_RECOVERY_POINT && sei->parsed) {
+        printf("{\"event\":\"sei\",\"type\":%u,\"type_name\":\"recovery_point\",\"payload_size\":%zu,\"recovery_frame_cnt\":%u,\"exact_match\":%u,\"broken_link\":%u,\"changing_slice_group_idc\":%u}\n",
+               sei->payload_type, sei->payload_size,
+               sei->recovery_point.recovery_frame_cnt,
+               sei->recovery_point.exact_match_flag,
+               sei->recovery_point.broken_link_flag,
+               sei->recovery_point.changing_slice_group_idc);
+    } else if (sei->payload_type == AVC_SEI_BUFFERING_PERIOD && sei->parsed) {
+        printf("{\"event\":\"sei\",\"type\":%u,\"type_name\":\"buffering_period\",\"payload_size\":%zu,\"sps_id\":%u,\"nal_initial_cpb_removal_delay0\":%u,\"nal_initial_cpb_removal_delay_offset0\":%u,\"vcl_initial_cpb_removal_delay0\":%u,\"vcl_initial_cpb_removal_delay_offset0\":%u}\n",
+               sei->payload_type, sei->payload_size,
+               sei->buffering_period.seq_parameter_set_id,
+               sei->buffering_period.nal_initial_cpb_removal_delay[0],
+               sei->buffering_period.nal_initial_cpb_removal_delay_offset[0],
+               sei->buffering_period.vcl_initial_cpb_removal_delay[0],
+               sei->buffering_period.vcl_initial_cpb_removal_delay_offset[0]);
+    } else if (sei->payload_type == AVC_SEI_PIC_TIMING && sei->parsed) {
+        printf("{\"event\":\"sei\",\"type\":%u,\"type_name\":\"pic_timing\",\"payload_size\":%zu,\"cpb_removal_delay\":%u,\"dpb_output_delay\":%u,\"pic_struct\":%u,\"clock_timestamp_count\":%u}\n",
+               sei->payload_type, sei->payload_size,
+               sei->pic_timing.cpb_removal_delay,
+               sei->pic_timing.dpb_output_delay,
+               sei->pic_timing.pic_struct,
+               sei->pic_timing.clock_timestamp_count);
+    } else {
+        printf("{\"event\":\"sei\",\"type\":%u,\"payload_size\":%zu,\"parsed\":%s}\n",
+               sei->payload_type, sei->payload_size, sei->parsed ? "true" : "false");
+    }
 }
 
 static void on_slice(void *opaque, const avc_slice_header_t *slice)
@@ -90,11 +127,14 @@ static void on_macroblock(void *opaque, const avc_macroblock_event_t *mb)
     if (!want_mb(options, mb->address)) {
         return;
     }
-    printf("{\"event\":\"macroblock\",\"address\":%u,\"entropy\":\"%s\",\"skipped\":%s,\"mb_type\":%u,\"mb_skip_run\":%u,\"cbp_luma\":%u,\"cbp_chroma\":%u,\"transform_8x8\":%s,\"mb_qp_delta\":%d,\"pcm_luma_samples\":%u,\"pcm_chroma_samples\":%u,\"pcm_luma_bits\":%d,\"pcm_chroma_bits\":%d}\n",
+    printf("{\"event\":\"macroblock\",\"address\":%u,\"entropy\":\"%s\",\"skipped\":%s,\"mb_field_decoding_flag\":%s,\"mb_type\":%u,\"mb_skip_run\":%u,\"cbp_luma\":%u,\"cbp_chroma\":%u,\"transform_8x8\":%s,\"mb_qp_delta\":%d,\"qp_y\":%d,\"qp_cb\":%d,\"qp_cr\":%d,\"pcm_luma_samples\":%u,\"pcm_chroma_samples\":%u,\"pcm_luma_bits\":%d,\"pcm_chroma_bits\":%d}\n",
            mb->address, mb->entropy == AVC_MB_ENTROPY_CABAC ? "cabac" : "cavlc",
-           mb->skipped ? "true" : "false", mb->mb_type, mb->mb_skip_run,
+           mb->skipped ? "true" : "false",
+           mb->mb_field_decoding_flag ? "true" : "false",
+           mb->mb_type, mb->mb_skip_run,
            mb->coded_block_pattern_luma, mb->coded_block_pattern_chroma,
            mb->transform_size_8x8_flag ? "true" : "false", mb->mb_qp_delta,
+           mb->qp_y, mb->qp_cb, mb->qp_cr,
            mb->pcm_luma_samples, mb->pcm_chroma_samples,
            mb->pcm_sample_bits_luma, mb->pcm_sample_bits_chroma);
 }
@@ -182,33 +222,26 @@ static void on_residual(void *opaque, const avc_residual_event_t *residual)
                residual->cabac_block.total_coeff);
         for (i = 0; i < residual->cabac_block.max_coeff; i++) {
             if (residual->cabac_block.coeff_level[i] != 0) {
-                printf("%s{\"scan\":%u,\"level\":%d}",
-                       emitted == 0 ? "" : ",", i, residual->cabac_block.coeff_level[i]);
+                printf("%s{\"scan\":%u,\"x\":%u,\"y\":%u,\"mb_x\":%u,\"mb_y\":%u,\"level\":%d}",
+                       emitted == 0 ? "" : ",", i,
+                       residual->cabac_block.coeff_x[i], residual->cabac_block.coeff_y[i],
+                       residual->coeff_mb_x[i], residual->coeff_mb_y[i],
+                       residual->cabac_block.coeff_level[i]);
                 emitted++;
             }
         }
         printf("]}\n");
     } else {
-        unsigned scan = residual->block.total_zeros + residual->block.total_coeff;
-
         printf("{\"event\":\"residual\",\"entropy\":\"cavlc\",\"mb_address\":%u,\"block_kind\":\"%s\",\"block_index\":%u,\"total_coeff\":%u,\"trailing_ones\":%u,\"total_zeros\":%u,\"coefficients\":[",
                residual->mb_address, residual_kind_name(residual->block_kind), residual->block_index,
                residual->block.total_coeff, residual->block.trailing_ones,
                residual->block.total_zeros);
         for (i = 0; i < residual->block.total_coeff; i++) {
-            if (scan > 0) {
-                scan--;
-            }
-            printf("%s{\"coded_index\":%u,\"scan\":%u,\"level\":%d,\"run_before\":%u}",
-                   i == 0 ? "" : ",", i, scan,
+            printf("%s{\"coded_index\":%u,\"scan\":%u,\"x\":%u,\"y\":%u,\"mb_x\":%u,\"mb_y\":%u,\"level\":%d,\"run_before\":%u}",
+                   i == 0 ? "" : ",", i, residual->block.coeff_scan[i],
+                   residual->block.coeff_x[i], residual->block.coeff_y[i],
+                   residual->coeff_mb_x[i], residual->coeff_mb_y[i],
                    residual->block.coeff_level[i], residual->block.run_before[i]);
-            if (i + 1u < residual->block.total_coeff) {
-                if (scan > residual->block.run_before[i]) {
-                    scan -= residual->block.run_before[i];
-                } else {
-                    scan = 0;
-                }
-            }
         }
         printf("]}\n");
     }
@@ -270,6 +303,11 @@ static uint8_t *read_file(const char *path, size_t *size_out)
     return data;
 }
 
+static void usage(const char *progname)
+{
+    fprintf(stderr, "usage: %s [-i filename] [--m address] input.264\n", progname);
+}
+
 int main(int argc, char **argv)
 {
     avc_parser_t parser;
@@ -279,34 +317,41 @@ int main(int argc, char **argv)
     uint8_t *data;
     size_t size = 0;
     int ok;
+    int opt;
 
-    if (argc == 2) {
-        input_path = argv[1];
-    } else if (argc == 4 && argv[1][0] == '-' && argv[1][1] == '-' &&
-               argv[1][2] == 'm' && argv[1][3] == 'b' && argv[1][4] == '\0') {
-        char *end = NULL;
-        unsigned long value = strtoul(argv[2], &end, 10);
-        if (!end || *end != '\0' || value > 0xffffffffUL) {
-            fprintf(stderr, "invalid macroblock address: %s\n", argv[2]);
+    while ((opt = getopt(argc, argv, "m:i:")) != -1) {
+        switch (opt) {
+        case 'm':
+            {
+                char *end = NULL;
+                unsigned long value = strtoul(optarg, &end, 10);
+                if (!end || *end != '\0' || value > 0xffffffffUL) {
+                    fprintf(stderr, "invalid macroblock address: %s\n", optarg);
+                    return 2;
+                }
+                options.filter_mb = 1;
+                options.mb_address = (uint32_t)value;
+            }
+            break;
+        case 'i':
+            options.input = strdup(optarg);
+            break;
+        default:
+            usage(argv[0]);
             return 2;
         }
-        options.filter_mb = 1;
-        options.mb_address = (uint32_t)value;
-        input_path = argv[3];
-    } else {
-        fprintf(stderr, "usage: %s [--mb address] input.264\n", argv[0]);
-        return 2;
     }
 
-    data = read_file(input_path, &size);
+    data = read_file(options.input, &size);
     if (!data) {
-        fprintf(stderr, "failed to read %s\n", input_path);
+        fprintf(stderr, "failed to read %s\n", options.input);
         return 1;
     }
 
     callbacks.on_nal = on_nal;
     callbacks.on_sps = on_sps;
     callbacks.on_pps = on_pps;
+    callbacks.on_sei = on_sei;
     callbacks.on_slice = on_slice;
     callbacks.on_ref_lists = on_ref_lists;
     callbacks.on_macroblock = on_macroblock;

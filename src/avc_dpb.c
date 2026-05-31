@@ -25,13 +25,27 @@ static void sort_short_term_desc(avc_dpb_picture_t *pics, unsigned count)
     }
 }
 
-static void sort_short_term_asc(avc_dpb_picture_t *pics, unsigned count)
+static void sort_poc_asc(avc_dpb_picture_t *pics, unsigned count)
 {
     unsigned i;
     for (i = 1; i < count; i++) {
         avc_dpb_picture_t v = pics[i];
         unsigned j = i;
-        while (j > 0 && pics[j - 1].frame_num > v.frame_num) {
+        while (j > 0 && pics[j - 1].poc > v.poc) {
+            pics[j] = pics[j - 1];
+            j--;
+        }
+        pics[j] = v;
+    }
+}
+
+static void sort_poc_desc(avc_dpb_picture_t *pics, unsigned count)
+{
+    unsigned i;
+    for (i = 1; i < count; i++) {
+        avc_dpb_picture_t v = pics[i];
+        unsigned j = i;
+        while (j > 0 && pics[j - 1].poc < v.poc) {
             pics[j] = pics[j - 1];
             j--;
         }
@@ -53,12 +67,74 @@ static void sort_long_term_asc(avc_dpb_picture_t *pics, unsigned count)
     }
 }
 
+static int same_pic(const avc_dpb_picture_t *a, const avc_dpb_picture_t *b)
+{
+    return a->valid == b->valid &&
+           a->frame_num == b->frame_num &&
+           a->poc == b->poc &&
+           a->is_long_term == b->is_long_term &&
+           a->long_term_frame_idx == b->long_term_frame_idx &&
+           a->is_idr == b->is_idr;
+}
+
+static int same_list_prefix(const avc_dpb_picture_t *a,
+                            const avc_dpb_picture_t *b,
+                            unsigned count)
+{
+    unsigned i;
+
+    for (i = 0; i < count; i++) {
+        if (!same_pic(&a[i], &b[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void append_pic(avc_dpb_picture_t *dst, unsigned *count,
                        const avc_dpb_picture_t *pic)
 {
     if (*count < AVC_REF_LIST_MAX) {
         dst[*count] = *pic;
         (*count)++;
+    }
+}
+
+static void append_short_by_poc(avc_dpb_picture_t *dst, unsigned *count,
+                                avc_dpb_picture_t *short_refs,
+                                unsigned short_count,
+                                int32_t curr_poc,
+                                int before_current)
+{
+    avc_dpb_picture_t filtered[AVC_DPB_MAX_PICTURES];
+    unsigned filtered_count = 0;
+    unsigned i;
+
+    for (i = 0; i < short_count; i++) {
+        if (before_current) {
+            if (short_refs[i].poc < curr_poc) {
+                filtered[filtered_count++] = short_refs[i];
+            }
+        } else if (short_refs[i].poc > curr_poc) {
+            filtered[filtered_count++] = short_refs[i];
+        }
+    }
+    if (before_current) {
+        sort_poc_desc(filtered, filtered_count);
+    } else {
+        sort_poc_asc(filtered, filtered_count);
+    }
+    for (i = 0; i < filtered_count; i++) {
+        append_pic(dst, count, &filtered[i]);
+    }
+}
+
+static void limit_list(unsigned *count, uint32_t active_minus1)
+{
+    uint32_t active = active_minus1 + 1u;
+
+    if (active < *count) {
+        *count = active;
     }
 }
 
@@ -130,23 +206,35 @@ void avc_dpb_build_ref_lists(const avc_dpb_t *dpb,
 
     sort_long_term_asc(long_refs, long_count);
     if (slice->slice_kind == AVC_SLICE_B) {
-        sort_short_term_asc(short_refs, short_count);
-    } else {
-        sort_short_term_desc(short_refs, short_count);
-    }
-    for (i = 0; i < short_count; i++) {
-        append_pic(lists->l0, &lists->count_l0, &short_refs[i]);
-    }
-    for (i = 0; i < long_count; i++) {
-        append_pic(lists->l0, &lists->count_l0, &long_refs[i]);
-    }
-    if (slice->slice_kind == AVC_SLICE_B) {
-        sort_short_term_desc(short_refs, short_count);
-        for (i = 0; i < short_count; i++) {
-            append_pic(lists->l1, &lists->count_l1, &short_refs[i]);
+        int32_t curr_poc = slice_poc(slice);
+        append_short_by_poc(lists->l0, &lists->count_l0, short_refs,
+                            short_count, curr_poc, 1);
+        append_short_by_poc(lists->l0, &lists->count_l0, short_refs,
+                            short_count, curr_poc, 0);
+        for (i = 0; i < long_count; i++) {
+            append_pic(lists->l0, &lists->count_l0, &long_refs[i]);
         }
+
+        append_short_by_poc(lists->l1, &lists->count_l1, short_refs,
+                            short_count, curr_poc, 0);
+        append_short_by_poc(lists->l1, &lists->count_l1, short_refs,
+                            short_count, curr_poc, 1);
         for (i = 0; i < long_count; i++) {
             append_pic(lists->l1, &lists->count_l1, &long_refs[i]);
+        }
+        if (lists->count_l0 > 1 && lists->count_l0 == lists->count_l1 &&
+            same_list_prefix(lists->l0, lists->l1, lists->count_l0)) {
+            avc_dpb_picture_t tmp = lists->l1[0];
+            lists->l1[0] = lists->l1[1];
+            lists->l1[1] = tmp;
+        }
+    } else {
+        sort_short_term_desc(short_refs, short_count);
+        for (i = 0; i < short_count; i++) {
+            append_pic(lists->l0, &lists->count_l0, &short_refs[i]);
+        }
+        for (i = 0; i < long_count; i++) {
+            append_pic(lists->l0, &lists->count_l0, &long_refs[i]);
         }
     }
 
@@ -161,6 +249,14 @@ void avc_dpb_build_ref_lists(const avc_dpb_t *dpb,
                                  slice->ref_pic_list_modifications_l1,
                                  slice->ref_pic_list_modification_count_l1,
                                  slice->frame_num);
+    }
+
+    if (slice->slice_kind == AVC_SLICE_P || slice->slice_kind == AVC_SLICE_SP ||
+        slice->slice_kind == AVC_SLICE_B) {
+        limit_list(&lists->count_l0, slice->num_ref_idx_l0_active_minus1);
+    }
+    if (slice->slice_kind == AVC_SLICE_B) {
+        limit_list(&lists->count_l1, slice->num_ref_idx_l1_active_minus1);
     }
 }
 

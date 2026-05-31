@@ -75,6 +75,7 @@ static const cabac_ctx_init_entry_t cabac_init_common[] = {
     {62, -5, 86}, {63, 2, 88}, {64, 0, 58},
     {65, -3, 76}, {66, -10, 94}, {67, 5, 54},
     {68, 4, 69}, {69, -3, 81},
+    {70, 0, 45}, {71, -4, 78}, {72, -3, 96},
     {73, 13, 41}, {74, 3, 62}, {75, -2, 79}, {76, 5, 59},
     {77, 6, 55}, {78, -5, 86}, {79, -3, 92}, {80, -10, 85},
     {81, -1, 66}, {82, -4, 77}, {83, -2, 71}, {84, -2, 75},
@@ -533,6 +534,21 @@ int avc_cabac_decode_intra_chroma_pred_mode(avc_cabac_decoder_t *cabac,
     }
     *mode = value;
     return 1;
+}
+
+int avc_cabac_decode_mb_field_decoding_flag(avc_cabac_decoder_t *cabac,
+                                            int left_available, int left_field,
+                                            int top_available, int top_field)
+{
+    unsigned ctx_inc = 0;
+
+    if (left_available && left_field) {
+        ctx_inc++;
+    }
+    if (top_available && top_field) {
+        ctx_inc++;
+    }
+    return avc_cabac_decode_decision(cabac, 70 + ctx_inc);
 }
 
 int avc_cabac_decode_ref_idx_l0(avc_cabac_decoder_t *cabac,

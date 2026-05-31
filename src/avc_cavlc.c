@@ -376,7 +376,94 @@ static int read_run_before(avc_bitreader_t *br, unsigned zeros_left,
                            value_count, run_before);
 }
 
+int avc_cavlc_scan_position(unsigned max_coeff,
+                            unsigned scan,
+                            avc_cavlc_scan_t scan_mode,
+                            unsigned *x,
+                            unsigned *y)
+{
+    static const uint8_t scan_4x4_frame[16] = {
+        0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15
+    };
+    static const uint8_t scan_4x4_field[16] = {
+        0, 4, 1, 8, 12, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15
+    };
+    static const uint8_t scan_8x8_frame[64] = {
+        0, 1, 8, 16, 9, 2, 3, 10,
+        17, 24, 32, 25, 18, 11, 4, 5,
+        12, 19, 26, 33, 40, 48, 41, 34,
+        27, 20, 13, 6, 7, 14, 21, 28,
+        35, 42, 49, 56, 57, 50, 43, 36,
+        29, 22, 15, 23, 30, 37, 44, 51,
+        58, 59, 52, 45, 38, 31, 39, 46,
+        53, 60, 61, 54, 47, 55, 62, 63
+    };
+    static const uint8_t scan_8x8_field[64] = {
+        0, 8, 16, 1, 9, 24, 32, 17,
+        2, 10, 25, 40, 48, 33, 18, 3,
+        11, 26, 41, 56, 49, 34, 19, 4,
+        12, 27, 42, 57, 50, 35, 20, 5,
+        13, 28, 43, 58, 51, 36, 21, 6,
+        14, 29, 44, 59, 52, 37, 22, 7,
+        15, 30, 45, 60, 53, 38, 23, 31,
+        46, 61, 54, 39, 47, 62, 55, 63
+    };
+    int field_scan = scan_mode == AVC_CAVLC_SCAN_FIELD ||
+                     scan_mode == AVC_CAVLC_SCAN_TRANSFORM_BYPASS_FIELD;
+    unsigned raster;
+
+    if (!x || !y) {
+        return 0;
+    }
+
+    if (max_coeff == 64) {
+        if (scan >= 64) {
+            return 0;
+        }
+        raster = field_scan ? scan_8x8_field[scan] : scan_8x8_frame[scan];
+        *x = raster & 7u;
+        *y = raster >> 3;
+        return 1;
+    }
+    if (max_coeff == 16) {
+        if (scan >= 16) {
+            return 0;
+        }
+        raster = field_scan ? scan_4x4_field[scan] : scan_4x4_frame[scan];
+        *x = raster & 3u;
+        *y = raster >> 2;
+        return 1;
+    }
+    if (max_coeff == 15) {
+        if (scan >= 15) {
+            return 0;
+        }
+        raster = field_scan ? scan_4x4_field[scan + 1u] : scan_4x4_frame[scan + 1u];
+        *x = raster & 3u;
+        *y = raster >> 2;
+        return 1;
+    }
+    if (max_coeff == 4) {
+        if (scan >= 4) {
+            return 0;
+        }
+        *x = scan & 1u;
+        *y = scan >> 1;
+        return 1;
+    }
+    if (max_coeff == 8) {
+        if (scan >= 8) {
+            return 0;
+        }
+        *x = scan & 1u;
+        *y = scan >> 1;
+        return 1;
+    }
+    return 0;
+}
+
 int avc_cavlc_read_residual_block(avc_bitreader_t *br, int nC, unsigned max_coeff,
+                                  avc_cavlc_scan_t scan_mode,
                                   avc_cavlc_block_t *block,
                                   avc_cavlc_callbacks_t callbacks,
                                   void *opaque)
@@ -446,6 +533,12 @@ int avc_cavlc_read_residual_block(avc_bitreader_t *br, int nC, unsigned max_coef
         unsigned scan = block->total_zeros + block->total_coeff - 1u;
         for (i = 0; i < block->total_coeff; i++) {
             if (scan >= max_coeff) {
+                br->error = 1;
+                return 0;
+            }
+            block->coeff_scan[i] = scan;
+            if (!avc_cavlc_scan_position(max_coeff, scan, scan_mode,
+                                         &block->coeff_x[i], &block->coeff_y[i])) {
                 br->error = 1;
                 return 0;
             }
