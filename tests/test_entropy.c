@@ -24,6 +24,12 @@ typedef struct {
     avc_residual_kind_t kind[32];
     unsigned block_index[32];
     unsigned total_coeff[32];
+    unsigned component[32];
+    unsigned chroma_format_idc[32];
+    unsigned bit_depth_luma[32];
+    unsigned bit_depth_chroma[32];
+    unsigned scaling_list_size[32];
+    int scaling_list_index[32];
 } residual_trace_t;
 
 static void bw_put_bit(bit_writer_t *bw, unsigned bit)
@@ -87,6 +93,12 @@ static void record_residual(void *opaque, const avc_residual_event_t *residual)
     trace->kind[trace->count] = residual->block_kind;
     trace->block_index[trace->count] = residual->block_index;
     trace->total_coeff[trace->count] = residual->block.total_coeff;
+    trace->component[trace->count] = residual->component;
+    trace->chroma_format_idc[trace->count] = residual->chroma_format_idc;
+    trace->bit_depth_luma[trace->count] = residual->bit_depth_luma;
+    trace->bit_depth_chroma[trace->count] = residual->bit_depth_chroma;
+    trace->scaling_list_size[trace->count] = residual->scaling_list_size;
+    trace->scaling_list_index[trace->count] = residual->scaling_list_index;
     trace->count++;
 }
 
@@ -277,6 +289,8 @@ int main(void)
         memset(&sets, 0, sizeof(sets));
         sets.sps[0].present = 1;
         sets.sps[0].chroma_format_idc = 1;
+        sets.sps[0].bit_depth_luma_minus8 = 2;
+        sets.sps[0].bit_depth_chroma_minus8 = 2;
         sets.sps[0].frame_mbs_only_flag = 1;
         sets.pps[0].present = 1;
         sets.pps[0].transform_8x8_mode_flag = 1;
@@ -301,6 +315,12 @@ int main(void)
         assert(trace.kind[0] == AVC_RESIDUAL_LUMA_8X8);
         assert(trace.block_index[0] == 4);
         assert(trace.total_coeff[0] == 2);
+        assert(trace.component[0] == 0);
+        assert(trace.chroma_format_idc[0] == 1);
+        assert(trace.bit_depth_luma[0] == 10);
+        assert(trace.bit_depth_chroma[0] == 10);
+        assert(trace.scaling_list_size[0] == 8);
+        assert(trace.scaling_list_index[0] == 0);
         assert(trace.block_index[1] == 5);
         assert(trace.total_coeff[1] == 1);
         assert(trace.block_index[2] == 6);
@@ -317,7 +337,7 @@ int main(void)
 
         avc_cabac_init(&cabac, data, sizeof(data));
         assert(!cabac.error);
-        assert(avc_cabac_init_contexts(&cabac, 26, 0, 2));
+        assert(avc_cabac_init_contexts(&cabac, 26, 0, AVC_SLICE_P));
         avc_cabac_set_context(&cabac, 14, 20, 0);
         assert(avc_cabac_decode_mb_type_p(&cabac, &value));
         assert(value <= 31);
@@ -333,10 +353,19 @@ int main(void)
 
         avc_cabac_init(&cabac, data, sizeof(data));
         assert(!cabac.error);
-        assert(avc_cabac_init_contexts(&cabac, 26, 0, 2));
+        assert(avc_cabac_init_contexts(&cabac, 26, 0, AVC_SLICE_P));
         assert(cabac.ctx[14].state == 53);
         assert(cabac.ctx[14].mps == 0);
         assert(cabac.ctx[105].state != 10 || cabac.ctx[105].mps != 0);
+        assert(avc_cabac_init_contexts(&cabac, 26, 0, AVC_SLICE_I));
+        assert(cabac.ctx[14].state == 62);
+        assert(cabac.ctx[14].mps == 0);
+        assert(avc_cabac_init_contexts(&cabac, 26, 1, AVC_SLICE_P));
+        assert(cabac.ctx[14].state == 58);
+        assert(cabac.ctx[14].mps == 0);
+        assert(avc_cabac_init_contexts(&cabac, 26, 2, AVC_SLICE_B));
+        assert(cabac.ctx[14].state == 29);
+        assert(cabac.ctx[14].mps == 0);
         avc_cabac_set_context(&cabac, 231, 63, 0);
         assert(avc_cabac_decode_coeff_abs_level_minus1_stateful(&cabac, 227, 2, 0, &value));
         assert(value < 128);

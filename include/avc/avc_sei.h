@@ -23,6 +23,9 @@ typedef struct {
     uint8_t discontinuity_flag;
     uint8_t cnt_dropped_flag;
     uint8_t n_frames;
+    uint8_t seconds_flag;
+    uint8_t minutes_flag;
+    uint8_t hours_flag;
     uint8_t seconds_value;
     uint8_t minutes_value;
     uint8_t hours_value;
@@ -38,6 +41,9 @@ typedef struct {
 } avc_sei_buffering_period_t;
 
 typedef struct {
+    uint8_t cpb_removal_delay_present;
+    uint8_t dpb_output_delay_present;
+    uint8_t pic_struct_present;
     uint32_t cpb_removal_delay;
     uint32_t dpb_output_delay;
     uint8_t pic_struct;

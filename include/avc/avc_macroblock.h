@@ -7,6 +7,9 @@
 #include "avc/avc_cavlc.h"
 #include "avc/avc_syntax.h"
 
+#define AVC_MB_PRED_MAX_PARTITIONS 4
+#define AVC_MB_PRED_MAX_SUB_PARTITIONS 16
+
 typedef enum {
     AVC_MB_ENTROPY_CAVLC = 0,
     AVC_MB_ENTROPY_CABAC = 1
@@ -46,18 +49,41 @@ typedef struct {
     avc_mb_pred_kind_t kind;
     unsigned intra_chroma_pred_mode;
     unsigned partition_count;
-    uint8_t list_mask[4];
-    uint8_t direct_flag[4];
+    uint8_t partition_x[AVC_MB_PRED_MAX_PARTITIONS];
+    uint8_t partition_y[AVC_MB_PRED_MAX_PARTITIONS];
+    uint8_t partition_width[AVC_MB_PRED_MAX_PARTITIONS];
+    uint8_t partition_height[AVC_MB_PRED_MAX_PARTITIONS];
+    uint8_t sub_partition_count[AVC_MB_PRED_MAX_PARTITIONS];
+    uint8_t sub_partition_width[AVC_MB_PRED_MAX_PARTITIONS];
+    uint8_t sub_partition_height[AVC_MB_PRED_MAX_PARTITIONS];
+    uint8_t list_mask[AVC_MB_PRED_MAX_PARTITIONS];
+    uint8_t direct_flag[AVC_MB_PRED_MAX_PARTITIONS];
     uint8_t direct_spatial_mv_pred_flag;
-    unsigned sub_mb_type[4];
-    unsigned ref_idx_l0[4];
-    unsigned ref_idx_l1[4];
-    int16_t mvd_l0[4][2];
-    int16_t mvd_l1[4][2];
-    int16_t mv_pred_l0[4][2];
-    int16_t mv_pred_l1[4][2];
-    int16_t mv_l0[4][2];
-    int16_t mv_l1[4][2];
+    unsigned sub_mb_type[AVC_MB_PRED_MAX_PARTITIONS];
+    unsigned ref_idx_l0[AVC_MB_PRED_MAX_PARTITIONS];
+    unsigned ref_idx_l1[AVC_MB_PRED_MAX_PARTITIONS];
+    int16_t mvd_l0[AVC_MB_PRED_MAX_PARTITIONS][2];
+    int16_t mvd_l1[AVC_MB_PRED_MAX_PARTITIONS][2];
+    int16_t mv_pred_l0[AVC_MB_PRED_MAX_PARTITIONS][2];
+    int16_t mv_pred_l1[AVC_MB_PRED_MAX_PARTITIONS][2];
+    int16_t mv_l0[AVC_MB_PRED_MAX_PARTITIONS][2];
+    int16_t mv_l1[AVC_MB_PRED_MAX_PARTITIONS][2];
+    unsigned sub_partition_total;
+    uint8_t sub_partition_parent[AVC_MB_PRED_MAX_SUB_PARTITIONS];
+    uint8_t sub_part_x[AVC_MB_PRED_MAX_SUB_PARTITIONS];
+    uint8_t sub_part_y[AVC_MB_PRED_MAX_SUB_PARTITIONS];
+    uint8_t sub_part_width[AVC_MB_PRED_MAX_SUB_PARTITIONS];
+    uint8_t sub_part_height[AVC_MB_PRED_MAX_SUB_PARTITIONS];
+    uint8_t sub_part_list_mask[AVC_MB_PRED_MAX_SUB_PARTITIONS];
+    uint8_t sub_part_direct_flag[AVC_MB_PRED_MAX_SUB_PARTITIONS];
+    unsigned sub_part_ref_idx_l0[AVC_MB_PRED_MAX_SUB_PARTITIONS];
+    unsigned sub_part_ref_idx_l1[AVC_MB_PRED_MAX_SUB_PARTITIONS];
+    int16_t sub_part_mvd_l0[AVC_MB_PRED_MAX_SUB_PARTITIONS][2];
+    int16_t sub_part_mvd_l1[AVC_MB_PRED_MAX_SUB_PARTITIONS][2];
+    int16_t sub_part_mv_pred_l0[AVC_MB_PRED_MAX_SUB_PARTITIONS][2];
+    int16_t sub_part_mv_pred_l1[AVC_MB_PRED_MAX_SUB_PARTITIONS][2];
+    int16_t sub_part_mv_l0[AVC_MB_PRED_MAX_SUB_PARTITIONS][2];
+    int16_t sub_part_mv_l1[AVC_MB_PRED_MAX_SUB_PARTITIONS][2];
     uint8_t prev_intra_pred_mode_flag[16];
     uint8_t rem_intra_pred_mode[16];
 } avc_mb_pred_event_t;
@@ -76,6 +102,21 @@ typedef struct {
     avc_residual_kind_t block_kind;
     unsigned block_index;
     avc_mb_entropy_t entropy;
+    uint8_t component; /* 0=Y, 1=Cb, 2=Cr */
+    uint8_t chroma_format_idc;
+    uint8_t chroma_array_type;
+    uint8_t separate_colour_plane_flag;
+    uint8_t bit_depth_luma;
+    uint8_t bit_depth_chroma;
+    int32_t qp_y;
+    int32_t qp_cb;
+    int32_t qp_cr;
+    int32_t qp_for_block;
+    uint8_t transform_bypass;
+    uint8_t scaling_list_size;
+    int8_t scaling_list_index;
+    uint8_t scaling_list_present_flag;
+    uint8_t scaling_list_use_default_flag;
     unsigned coeff_mb_x[AVC_CAVLC_MAX_COEFFS];
     unsigned coeff_mb_y[AVC_CAVLC_MAX_COEFFS];
     avc_cavlc_block_t block;

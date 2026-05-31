@@ -125,14 +125,17 @@ static int parse_pic_timing(avc_bitreader_t *br,
     if (hrd_delays_present(sps)) {
         const avc_hrd_parameters_t *hrd = sps->vui.nal_hrd_parameters_present_flag ?
             &sps->vui.nal_hrd_parameters : &sps->vui.vcl_hrd_parameters;
+        event->pic_timing.cpb_removal_delay_present = 1;
         event->pic_timing.cpb_removal_delay =
             read_fixed(br, hrd->cpb_removal_delay_length_minus1 + 1u);
+        event->pic_timing.dpb_output_delay_present = 1;
         event->pic_timing.dpb_output_delay =
             read_fixed(br, hrd->dpb_output_delay_length_minus1 + 1u);
     }
     if (!sps->vui.pic_struct_present_flag) {
         return !br->error;
     }
+    event->pic_timing.pic_struct_present = 1;
     event->pic_timing.pic_struct = (uint8_t)avc_br_read_bits(br, 4);
     count = clock_timestamp_count(event->pic_timing.pic_struct);
     event->pic_timing.clock_timestamp_count = (uint8_t)count;
@@ -153,14 +156,17 @@ static int parse_pic_timing(avc_bitreader_t *br,
         ts->cnt_dropped_flag = (uint8_t)avc_br_read_bit(br);
         ts->n_frames = (uint8_t)avc_br_read_bits(br, 8);
         if (ts->full_timestamp_flag) {
+            ts->seconds_flag = 1;
+            ts->minutes_flag = 1;
+            ts->hours_flag = 1;
             ts->seconds_value = (uint8_t)avc_br_read_bits(br, 6);
             ts->minutes_value = (uint8_t)avc_br_read_bits(br, 6);
             ts->hours_value = (uint8_t)avc_br_read_bits(br, 5);
-        } else if (avc_br_read_bit(br)) {
+        } else if ((ts->seconds_flag = (uint8_t)avc_br_read_bit(br)) != 0) {
             ts->seconds_value = (uint8_t)avc_br_read_bits(br, 6);
-            if (avc_br_read_bit(br)) {
+            if ((ts->minutes_flag = (uint8_t)avc_br_read_bit(br)) != 0) {
                 ts->minutes_value = (uint8_t)avc_br_read_bits(br, 6);
-                if (avc_br_read_bit(br)) {
+                if ((ts->hours_flag = (uint8_t)avc_br_read_bit(br)) != 0) {
                     ts->hours_value = (uint8_t)avc_br_read_bits(br, 5);
                 }
             }

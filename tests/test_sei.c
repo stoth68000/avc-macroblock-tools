@@ -177,18 +177,73 @@ static void test_pic_timing(void)
     assert(avc_parse_sei_rbsp(rbsp, size, &sets, NULL, callbacks, &trace));
     assert(trace.count == 1);
     assert(trace.last.parsed);
+    assert(trace.last.pic_timing.cpb_removal_delay_present == 1);
     assert(trace.last.pic_timing.cpb_removal_delay == 17);
+    assert(trace.last.pic_timing.dpb_output_delay_present == 1);
     assert(trace.last.pic_timing.dpb_output_delay == 9);
+    assert(trace.last.pic_timing.pic_struct_present == 1);
     assert(trace.last.pic_timing.pic_struct == 0);
     assert(trace.last.pic_timing.clock_timestamp_count == 1);
     assert(trace.last.pic_timing.clock_timestamp[0].present == 1);
     assert(trace.last.pic_timing.clock_timestamp[0].ct_type == 2);
     assert(trace.last.pic_timing.clock_timestamp[0].counting_type == 3);
     assert(trace.last.pic_timing.clock_timestamp[0].n_frames == 7);
+    assert(trace.last.pic_timing.clock_timestamp[0].seconds_flag == 1);
     assert(trace.last.pic_timing.clock_timestamp[0].seconds_value == 12);
+    assert(trace.last.pic_timing.clock_timestamp[0].minutes_flag == 1);
     assert(trace.last.pic_timing.clock_timestamp[0].minutes_value == 34);
+    assert(trace.last.pic_timing.clock_timestamp[0].hours_flag == 1);
     assert(trace.last.pic_timing.clock_timestamp[0].hours_value == 5);
     assert(trace.last.pic_timing.clock_timestamp[0].time_offset == -2);
+}
+
+static void test_pic_timing_partial_timestamp(void)
+{
+    uint8_t rbsp[32];
+    bit_writer_t payload = {0};
+    avc_parameter_sets_t sets;
+    sei_trace_t trace = {0};
+    avc_sei_callbacks_t callbacks = {0};
+    size_t size;
+
+    init_timing_sps(&sets);
+    bw_put_bits(&payload, 3, 5);
+    bw_put_bits(&payload, 2, 4);
+    bw_put_bits(&payload, 3, 4);
+    bw_put_bit(&payload, 0);
+    bw_put_bit(&payload, 1);
+    bw_put_bits(&payload, 1, 2);
+    bw_put_bit(&payload, 0);
+    bw_put_bits(&payload, 4, 5);
+    bw_put_bit(&payload, 0);
+    bw_put_bit(&payload, 0);
+    bw_put_bit(&payload, 0);
+    bw_put_bits(&payload, 11, 8);
+    bw_put_bit(&payload, 1);
+    bw_put_bits(&payload, 22, 6);
+    bw_put_bit(&payload, 1);
+    bw_put_bits(&payload, 33, 6);
+    bw_put_bit(&payload, 0);
+    bw_put_bits(&payload, 0x02, 4);
+    size = write_sei_payload(rbsp, AVC_SEI_PIC_TIMING, payload.data, bw_bytes(&payload));
+
+    callbacks.on_sei = on_sei;
+    assert(avc_parse_sei_rbsp(rbsp, size, &sets, NULL, callbacks, &trace));
+    assert(trace.count == 1);
+    assert(trace.last.parsed);
+    assert(trace.last.pic_timing.cpb_removal_delay == 3);
+    assert(trace.last.pic_timing.dpb_output_delay == 2);
+    assert(trace.last.pic_timing.pic_struct == 3);
+    assert(trace.last.pic_timing.clock_timestamp_count == 2);
+    assert(trace.last.pic_timing.clock_timestamp[0].present == 0);
+    assert(trace.last.pic_timing.clock_timestamp[1].present == 1);
+    assert(trace.last.pic_timing.clock_timestamp[1].full_timestamp_flag == 0);
+    assert(trace.last.pic_timing.clock_timestamp[1].seconds_flag == 1);
+    assert(trace.last.pic_timing.clock_timestamp[1].seconds_value == 22);
+    assert(trace.last.pic_timing.clock_timestamp[1].minutes_flag == 1);
+    assert(trace.last.pic_timing.clock_timestamp[1].minutes_value == 33);
+    assert(trace.last.pic_timing.clock_timestamp[1].hours_flag == 0);
+    assert(trace.last.pic_timing.clock_timestamp[1].time_offset == 2);
 }
 
 int main(void)
@@ -196,5 +251,6 @@ int main(void)
     test_recovery_point();
     test_buffering_period();
     test_pic_timing();
+    test_pic_timing_partial_timestamp();
     return 0;
 }
