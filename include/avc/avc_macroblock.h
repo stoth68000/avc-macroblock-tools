@@ -131,11 +131,14 @@ typedef struct {
 } avc_macroblock_callbacks_t;
 
 typedef struct {
+    uint32_t first_mb_in_slice;
+    uint32_t next_mb_address;
     uint32_t max_macroblocks;
     uint32_t macroblocks_seen;
     uint8_t entropy_coding_mode_flag;
     int cabac_initialized;
     int complete;
+    int picture_complete;
 } avc_slice_data_summary_t;
 
 int avc_parse_slice_data(const uint8_t *rbsp, size_t rbsp_size,

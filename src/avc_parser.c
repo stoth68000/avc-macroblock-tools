@@ -10,6 +10,13 @@ static void report_error(avc_parser_t *parser, const char *message, size_t offse
     }
 }
 
+static void report_note(avc_parser_t *parser, const char *message)
+{
+    if (parser->callbacks.on_note) {
+        parser->callbacks.on_note(parser->opaque, message);
+    }
+}
+
 static void on_mb_bridge(void *opaque, const avc_macroblock_event_t *mb)
 {
     avc_parser_t *parser = (avc_parser_t *)opaque;
@@ -37,6 +44,7 @@ static void on_residual_bridge(void *opaque, const avc_residual_event_t *residua
 static void on_note_bridge(void *opaque, const char *message)
 {
     avc_parser_t *parser = (avc_parser_t *)opaque;
+    parser->slice_notes_seen++;
     if (parser->callbacks.on_note) {
         parser->callbacks.on_note(parser->opaque, message);
     }
@@ -151,20 +159,33 @@ int avc_parser_parse_annexb(avc_parser_t *parser, const uint8_t *data, size_t si
                     mb_callbacks.on_mb_pred = on_mb_pred_bridge;
                     mb_callbacks.on_residual = on_residual_bridge;
                     mb_callbacks.on_note = on_note_bridge;
-                    if (avc_parse_slice_data(rbsp, rbsp_size, &slice, &parser->sets,
-                                             mb_callbacks, parser, &summary)) {
+                    parser->slice_notes_seen = 0;
+                    if (!avc_parse_slice_data(rbsp, rbsp_size, &slice, &parser->sets,
+                                              mb_callbacks, parser, &summary)) {
+                        char note[160];
+                        char message[160];
+
                         if (parser->callbacks.on_slice_data) {
                             parser->callbacks.on_slice_data(parser->opaque, &summary);
                         }
-                    } else {
-                        char message[160];
+                        if (parser->slice_notes_seen == 0) {
+                            snprintf(note, sizeof(note),
+                                     "slice data parser stopped without a more specific note: next_mb=%u slice_type=%u entropy=%s parsed_mbs=%u/%u",
+                                     summary.next_mb_address, slice.slice_type,
+                                     summary.entropy_coding_mode_flag ? "CABAC" : "CAVLC",
+                                     summary.macroblocks_seen, summary.max_macroblocks);
+                            report_note(parser, note);
+                        }
                         snprintf(message, sizeof(message),
-                                 "failed to parse slice data: first_mb=%u slice_type=%u entropy=%s parsed_mbs=%u/%u header_bits=%zu",
-                                 slice.first_mb_in_slice, slice.slice_type,
+                                 "failed to parse slice data: first_mb=%u next_mb=%u slice_type=%u entropy=%s parsed_mbs=%u/%u header_bits=%zu",
+                                 slice.first_mb_in_slice, summary.next_mb_address,
+                                 slice.slice_type,
                                  summary.entropy_coding_mode_flag ? "CABAC" : "CAVLC",
                                  summary.macroblocks_seen, summary.max_macroblocks,
                                  slice.header_bits);
                         report_error(parser, message, nal.offset);
+                    } else if (parser->callbacks.on_slice_data) {
+                        parser->callbacks.on_slice_data(parser->opaque, &summary);
                     }
                 }
                 avc_dpb_finish_slice(&parser->dpb, &slice, sps);

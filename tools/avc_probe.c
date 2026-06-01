@@ -593,31 +593,33 @@ static void on_slice_data(void *opaque, const avc_slice_data_summary_t *summary)
     if (!want_current_slice(options)) {
         return;
     }
-    printf("{\"event\":\"slice_data\",\"picture_index\":%u,\"slice_index\":%u,\"slice_in_picture\":%u,\"nal_index\":%u,\"entropy\":\"%s\",\"macroblocks_seen\":%u,\"max_macroblocks\":%u,\"cabac_initialized\":%s,\"complete\":%s}\n",
+    printf("{\"event\":\"slice_data\",\"picture_index\":%u,\"slice_index\":%u,\"slice_in_picture\":%u,\"nal_index\":%u,\"entropy\":\"%s\",\"first_mb\":%u,\"next_mb\":%u,\"macroblocks_seen\":%u,\"max_macroblocks\":%u,\"cabac_initialized\":%s,\"complete\":%s,\"picture_complete\":%s}\n",
            options->current_picture_index, options->current_slice_index,
            options->current_slice_in_picture, options->current_nal_index,
            summary->entropy_coding_mode_flag ? "cabac" : "cavlc",
+           summary->first_mb_in_slice, summary->next_mb_address,
            summary->macroblocks_seen, summary->max_macroblocks,
            summary->cabac_initialized ? "true" : "false",
-           summary->complete ? "true" : "false");
+           summary->complete ? "true" : "false",
+           summary->picture_complete ? "true" : "false");
 }
 
 static void on_note(void *opaque, const char *message)
 {
     const probe_options_t *options = (const probe_options_t *)opaque;
 
-    fprintf(stderr, "{\"event\":\"note\",\"picture_index\":%u,\"slice_index\":%u,\"nal_index\":%u,\"message\":\"%s\"}\n",
-            options->current_picture_index, options->current_slice_index,
-            options->current_nal_index, message);
+    printf("{\"event\":\"note\",\"picture_index\":%u,\"slice_index\":%u,\"nal_index\":%u,\"message\":\"%s\"}\n",
+           options->current_picture_index, options->current_slice_index,
+           options->current_nal_index, message);
 }
 
 static void on_error(void *opaque, const char *message, size_t offset)
 {
     const probe_options_t *options = (const probe_options_t *)opaque;
 
-    fprintf(stderr, "{\"event\":\"error\",\"picture_index\":%u,\"slice_index\":%u,\"nal_index\":%u,\"offset\":%zu,\"message\":\"%s\"}\n",
-            options->current_picture_index, options->current_slice_index,
-            options->current_nal_index, offset, message);
+    printf("{\"event\":\"error\",\"picture_index\":%u,\"slice_index\":%u,\"nal_index\":%u,\"offset\":%zu,\"message\":\"%s\"}\n",
+           options->current_picture_index, options->current_slice_index,
+           options->current_nal_index, offset, message);
 }
 
 static uint8_t *read_file(const char *path, size_t *size_out)

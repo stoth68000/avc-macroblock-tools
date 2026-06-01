@@ -1273,6 +1273,56 @@ static int signed_from_cabac_unary(unsigned value)
     return (value & 1u) ? signed_value : -signed_value;
 }
 
+static int decode_intra_mb_type(avc_cabac_decoder_t *cabac,
+                                unsigned ctx_base,
+                                int intra_slice,
+                                int left_intra16_or_pcm,
+                                int top_intra16_or_pcm,
+                                unsigned *mb_type)
+{
+    avc_cabac_context_t *state = &cabac->ctx[ctx_base];
+    unsigned ctx = 0;
+    unsigned value = 1;
+
+    if (intra_slice) {
+        if (left_intra16_or_pcm) {
+            ctx++;
+        }
+        if (top_intra16_or_pcm) {
+            ctx++;
+        }
+        if (avc_cabac_decode_decision(cabac, ctx_base + ctx) == 0) {
+            *mb_type = 0;
+            return !cabac->error;
+        }
+        state += 2;
+    } else if (avc_cabac_decode_decision(cabac, ctx_base) == 0) {
+        *mb_type = 0;
+        return !cabac->error;
+    }
+
+    if (avc_cabac_decode_terminate(cabac)) {
+        *mb_type = 25;
+        return !cabac->error;
+    }
+
+    value += 12u * (unsigned)avc_cabac_decode_decision(cabac, (unsigned)(state - cabac->ctx) + 1u);
+    if (avc_cabac_decode_decision(cabac, (unsigned)(state - cabac->ctx) + 2u)) {
+        value += 4u;
+        value += 4u * (unsigned)avc_cabac_decode_decision(cabac,
+                                                          (unsigned)(state - cabac->ctx) + 2u +
+                                                          (unsigned)intra_slice);
+    }
+    value += 2u * (unsigned)avc_cabac_decode_decision(cabac,
+                                                      (unsigned)(state - cabac->ctx) + 3u +
+                                                      (unsigned)intra_slice);
+    value += (unsigned)avc_cabac_decode_decision(cabac,
+                                                 (unsigned)(state - cabac->ctx) + 3u +
+                                                 2u * (unsigned)intra_slice);
+    *mb_type = value;
+    return !cabac->error;
+}
+
 int avc_cabac_decode_mb_skip_flag(avc_cabac_decoder_t *cabac, unsigned slice_type,
                                   int left_available, int left_skipped,
                                   int top_available, int top_skipped)
@@ -1295,46 +1345,70 @@ int avc_cabac_decode_mb_skip_flag(avc_cabac_decoder_t *cabac, unsigned slice_typ
 
 int avc_cabac_decode_mb_type_i(avc_cabac_decoder_t *cabac, unsigned *mb_type)
 {
-    unsigned suffix;
-
-    if (avc_cabac_decode_decision(cabac, 3) == 0) {
-        *mb_type = 0;
-        return !cabac->error;
-    }
-    if (!decode_unary(cabac, 4, 24, &suffix)) {
-        return 0;
-    }
-    *mb_type = 1 + suffix;
-    return !cabac->error;
+    return decode_intra_mb_type(cabac, 3, 1, 0, 0, mb_type);
 }
 
 int avc_cabac_decode_mb_type_p(avc_cabac_decoder_t *cabac, unsigned *mb_type)
 {
-    unsigned suffix;
-
     if (avc_cabac_decode_decision(cabac, 14) == 0) {
-        *mb_type = 0;
+        if (avc_cabac_decode_decision(cabac, 15) == 0) {
+            *mb_type = 3u * (unsigned)avc_cabac_decode_decision(cabac, 16);
+        } else {
+            *mb_type = 2u - (unsigned)avc_cabac_decode_decision(cabac, 17);
+        }
         return !cabac->error;
     }
-    if (!decode_unary(cabac, 15, 29, &suffix)) {
+    if (!decode_intra_mb_type(cabac, 17, 0, 0, 0, mb_type)) {
         return 0;
     }
-    *mb_type = 1 + suffix;
+    *mb_type += 5u;
     return !cabac->error;
 }
 
-int avc_cabac_decode_mb_type_b(avc_cabac_decoder_t *cabac, unsigned *mb_type)
+int avc_cabac_decode_mb_type_b(avc_cabac_decoder_t *cabac,
+                               int left_available, int left_direct,
+                               int top_available, int top_direct,
+                               unsigned *mb_type)
 {
-    unsigned suffix;
+    unsigned ctx = 0;
+    unsigned bits;
 
-    if (avc_cabac_decode_decision(cabac, 27) == 0) {
+    if (left_available && !left_direct) {
+        ctx++;
+    }
+    if (top_available && !top_direct) {
+        ctx++;
+    }
+
+    if (avc_cabac_decode_decision(cabac, 27 + ctx) == 0) {
         *mb_type = 0;
         return !cabac->error;
     }
-    if (!decode_unary(cabac, 28, 47, &suffix)) {
-        return 0;
+    if (avc_cabac_decode_decision(cabac, 30) == 0) {
+        *mb_type = 1u + (unsigned)avc_cabac_decode_decision(cabac, 32);
+        return !cabac->error;
     }
-    *mb_type = 1 + suffix;
+
+    bits = (unsigned)avc_cabac_decode_decision(cabac, 31) << 3;
+    bits += (unsigned)avc_cabac_decode_decision(cabac, 32) << 2;
+    bits += (unsigned)avc_cabac_decode_decision(cabac, 32) << 1;
+    bits += (unsigned)avc_cabac_decode_decision(cabac, 32);
+
+    if (bits < 8) {
+        *mb_type = bits + 3u;
+    } else if (bits == 13) {
+        if (!decode_intra_mb_type(cabac, 32, 0, 0, 0, mb_type)) {
+            return 0;
+        }
+        *mb_type += 23u;
+    } else if (bits == 14) {
+        *mb_type = 11;
+    } else if (bits == 15) {
+        *mb_type = 22;
+    } else {
+        bits = (bits << 1) + (unsigned)avc_cabac_decode_decision(cabac, 32);
+        *mb_type = bits - 4u;
+    }
     return !cabac->error;
 }
 
@@ -1445,6 +1519,7 @@ int avc_cabac_decode_mb_qp_delta(avc_cabac_decoder_t *cabac,
 {
     unsigned prefix = 0;
     unsigned ctx_idx = previous_mb_qp_delta_nonzero ? 61u : 60u;
+    unsigned continuation_ctx_idx = 62;
 
     if (avc_cabac_decode_decision(cabac, ctx_idx) == 0) {
         *mb_qp_delta = 0;
@@ -1452,7 +1527,7 @@ int avc_cabac_decode_mb_qp_delta(avc_cabac_decoder_t *cabac,
     }
     prefix = 1;
     while (prefix < 128) {
-        int bin = avc_cabac_decode_decision(cabac, 62);
+        int bin = avc_cabac_decode_decision(cabac, continuation_ctx_idx);
         if (cabac->error) {
             return 0;
         }
@@ -1461,6 +1536,7 @@ int avc_cabac_decode_mb_qp_delta(avc_cabac_decoder_t *cabac,
             return 1;
         }
         prefix++;
+        continuation_ctx_idx = 63;
     }
     cabac->error = 1;
     return 0;
@@ -1615,32 +1691,43 @@ int avc_cabac_decode_mvd_component(avc_cabac_decoder_t *cabac,
 int avc_cabac_decode_sub_mb_type_p(avc_cabac_decoder_t *cabac,
                                    unsigned *sub_mb_type)
 {
-    unsigned suffix;
-
-    if (avc_cabac_decode_decision(cabac, 21) == 0) {
+    if (avc_cabac_decode_decision(cabac, 21)) {
         *sub_mb_type = 0;
         return !cabac->error;
     }
-    if (!decode_unary(cabac, 22, 3, &suffix)) {
-        return 0;
+    if (!avc_cabac_decode_decision(cabac, 22)) {
+        *sub_mb_type = 1;
+        return !cabac->error;
     }
-    *sub_mb_type = 1 + suffix;
+    *sub_mb_type = avc_cabac_decode_decision(cabac, 23) ? 2u : 3u;
     return !cabac->error;
 }
 
 int avc_cabac_decode_sub_mb_type_b(avc_cabac_decoder_t *cabac,
                                    unsigned *sub_mb_type)
 {
-    unsigned suffix;
+    unsigned type;
 
-    if (avc_cabac_decode_decision(cabac, 36) == 0) {
+    if (!avc_cabac_decode_decision(cabac, 36)) {
         *sub_mb_type = 0;
         return !cabac->error;
     }
-    if (!decode_unary(cabac, 37, 12, &suffix)) {
-        return 0;
+    if (!avc_cabac_decode_decision(cabac, 37)) {
+        *sub_mb_type = 1u + (unsigned)avc_cabac_decode_decision(cabac, 39);
+        return !cabac->error;
     }
-    *sub_mb_type = 1 + suffix;
+
+    type = 3;
+    if (avc_cabac_decode_decision(cabac, 38)) {
+        if (avc_cabac_decode_decision(cabac, 39)) {
+            *sub_mb_type = 11u + (unsigned)avc_cabac_decode_decision(cabac, 39);
+            return !cabac->error;
+        }
+        type += 4;
+    }
+    type += 2u * (unsigned)avc_cabac_decode_decision(cabac, 39);
+    type += (unsigned)avc_cabac_decode_decision(cabac, 39);
+    *sub_mb_type = type;
     return !cabac->error;
 }
 

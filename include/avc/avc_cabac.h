@@ -46,7 +46,10 @@ int avc_cabac_decode_mb_skip_flag(avc_cabac_decoder_t *cabac, unsigned slice_typ
                                   int top_available, int top_skipped);
 int avc_cabac_decode_mb_type_i(avc_cabac_decoder_t *cabac, unsigned *mb_type);
 int avc_cabac_decode_mb_type_p(avc_cabac_decoder_t *cabac, unsigned *mb_type);
-int avc_cabac_decode_mb_type_b(avc_cabac_decoder_t *cabac, unsigned *mb_type);
+int avc_cabac_decode_mb_type_b(avc_cabac_decoder_t *cabac,
+                               int left_available, int left_direct,
+                               int top_available, int top_direct,
+                               unsigned *mb_type);
 int avc_cabac_decode_transform_size_8x8_flag(avc_cabac_decoder_t *cabac,
                                              int left_transform_8x8,
                                              int top_transform_8x8);

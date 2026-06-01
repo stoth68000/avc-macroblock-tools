@@ -50,7 +50,7 @@ ctest --test-dir build
 
 Input is expected to be Annex B AVC elementary stream data. If you are probing MPEG-TS, demux PES payloads before passing the AVC byte stream to this library.
 
-The probe emits `nal_index`, `picture_index`, `slice_index`, and `slice_in_picture` fields so long streams can be navigated picture-by-picture before drilling into a macroblock. The optional `--picture`, `--slice`, `--slice-in-picture`, and `--mb` filters keep NAL/picture context but limit slice, macroblock, prediction, and residual JSON events to the selected rows. Residual events include coefficient-level entries so they can be compared against inspection tools.
+The probe emits one NDJSON event stream with `nal_index`, `picture_index`, `slice_index`, and `slice_in_picture` fields so long streams can be navigated picture-by-picture before drilling into a macroblock. The optional `--picture`, `--slice`, `--slice-in-picture`, and `--mb` filters keep NAL/picture context but limit slice, macroblock, prediction, and residual JSON events to the selected rows. `slice_data` events include `first_mb`, `next_mb`, and `picture_complete` so short slices can be distinguished from whole-picture completion. Residual events include coefficient-level entries so they can be compared against inspection tools.
 
 ## Layout
 
@@ -74,9 +74,11 @@ Goal: compare macroblock, prediction, residual, and coefficient details against 
   - SPS/PPS high-profile syntax, VUI/HRD, PPS FMO/scaling-list syntax, buffering-period/recovery-point/pic-timing SEI, and slice-header reference-list syntax are parsed and surfaced.
   - Macroblock events include entropy mode, skip state, `mb_field_decoding_flag`, `mb_type`, CBP, transform-8x8 flag, QP delta, derived `qp_y`, `qp_cb`, `qp_cr`, and I_PCM sample counts.
   - `mb_pred` events emit intra prediction modes, ref_idx, MVD, MVP, final MV, direct flags, list masks, sub-macroblock type slots, partition rectangles, sub-partition motion/reference rows, and resolved reference-picture identities when the active ref lists contain them.
+  - B-slice macroblock partition geometry is used for CABAC ref_idx/MVD context neighbors and for MVP/direct-mode spatial candidate selection across B_Direct, B_L0, B_L1, B_Bi, and B_8x8 forms.
   - CAVLC and CABAC residual events emit block identity, component/chroma layout, bit depth, per-block QP, transform-bypass state, scaling-list metadata, total coefficient count, coefficient level, scan index, block-local coordinates, and macroblock-local coordinates. CAVLC also emits trailing-one, total-zero, and run-before values.
   - Frame/field scan selection is centralized for CAVLC and CABAC residual coordinate placement, including 4x4, 8x8, AC-only, chroma DC, transform-bypass, and parsed/inferred MBAFF `mb_field_decoding_flag` scan modes.
   - Standard CABAC context initialization tables are wired for I/SI slices and P/B slices across every `cabac_init_idc`.
+  - CABAC macroblock-type decoding uses the standard I/P/B decision trees, including B-slice direct-neighbor context selection, P/B sub-macroblock type decision trees, I_PCM termination detection, raw PCM payload skipping, CABAC reinitialization after I_PCM, and the correct `mb_qp_delta` continuation contexts.
   - A first-pass DPB/reference-list model emits ref-list events and joins `ref_idx` output to frame-num/POC/long-term identity when available.
 
 - First StreamEye parity targets:
@@ -95,7 +97,7 @@ Goal: compare macroblock, prediction, residual, and coefficient details against 
 - Macroblock prediction and motion-vector blockers:
   - Derive distinct MVD, MVP, and final MV per actual P_8x8/B_8x8 sub-partition. Output has per-sub-partition rows now, but rows currently inherit motion from the modeled parent partition where derivation is not yet split.
   - Store and emit exact ref_idx, MVD, MVP, and final MV per actual sub-partition for L0/L1 so StreamEye motion-vector tables can be compared cell-for-cell.
-  - Use B-slice macroblock geometry in MVP/neighbor derivation for every B_Direct/B_L0/B_L1/B_Bi 16x16, 16x8, 8x16, and 8x8 form. Output geometry is emitted, but parts of motion derivation still use simplified neighbor shapes.
+  - Validate B-slice MVP/neighbor derivation against StreamEye traces for every B_Direct/B_L0/B_L1/B_Bi 16x16, 16x8, 8x16, and 8x8 form. Geometry-driven candidate selection is wired, but FMO, field, and MBAFF availability rules still need parity checks.
   - Finish direct-mode derivation by retaining colocated reference-picture macroblock motion maps in the DPB; current temporal-direct output cannot be exact without that state.
   - Refine top-right/top-left MVP candidate selection at sub-partition granularity, including unavailable-neighbor rules for FMO, field, and MBAFF pictures.
 

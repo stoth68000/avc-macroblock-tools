@@ -1,6 +1,8 @@
 #include "avc/avc_macroblock.h"
 #include "avc/avc_bitreader.h"
 #include "avc/avc_cabac.h"
+#include "avc_macroblock_layout.h"
+#include "avc_macroblock_types.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,45 +26,6 @@ typedef struct {
 } avc_mb_state_t;
 
 typedef struct {
-    avc_mb_pred_kind_t pred_kind;
-    uint32_t cbp_luma;
-    uint32_t cbp_chroma;
-    int is_pcm;
-} avc_i_mb_type_info_t;
-
-typedef enum {
-    AVC_P_MB_UNKNOWN = 0,
-    AVC_P_MB_L0_16X16,
-    AVC_P_MB_L0_L0_16X8,
-    AVC_P_MB_L0_L0_8X16,
-    AVC_P_MB_8X8,
-    AVC_P_MB_8X8REF0,
-    AVC_P_MB_INTRA
-} avc_p_mb_shape_t;
-
-typedef struct {
-    avc_p_mb_shape_t shape;
-    avc_i_mb_type_info_t intra;
-} avc_p_mb_type_info_t;
-
-typedef enum {
-    AVC_B_MB_UNKNOWN = 0,
-    AVC_B_MB_DIRECT,
-    AVC_B_MB_INTER,
-    AVC_B_MB_8X8,
-    AVC_B_MB_INTRA
-} avc_b_mb_shape_t;
-
-typedef struct {
-    avc_b_mb_shape_t shape;
-    unsigned partition_count;
-    uint8_t list_mask[4];
-    uint8_t partition_width[4];
-    uint8_t partition_height[4];
-    avc_i_mb_type_info_t intra;
-} avc_b_mb_type_info_t;
-
-typedef struct {
     avc_residual_kind_t kind;
     unsigned max_coeff;
     unsigned coded_ctx_base;
@@ -80,15 +43,6 @@ static const avc_cabac_residual_plan_t residual_plans[] = {
     {AVC_RESIDUAL_CHROMA_AC, 15, 101, 152, 213, 266}
 };
 
-static unsigned chroma_array_type(const avc_sps_t *sps);
-static unsigned chroma_ac_blocks_per_component(unsigned chroma_format_idc);
-static unsigned chroma_dc_coeffs(unsigned chroma_format_idc);
-static int luma4x4_block_origin(unsigned block_index, unsigned *x, unsigned *y);
-static int luma8x8_block_origin(unsigned block_index, unsigned *x, unsigned *y);
-static int chroma4x4_block_origin(unsigned chroma_format,
-                                  unsigned component_block_index,
-                                  unsigned *x,
-                                  unsigned *y);
 static void neighbor_states4(avc_mb_state_t *states, uint32_t count, uint32_t width,
                              uint32_t address,
                              const avc_mb_state_t **left,
@@ -118,77 +72,29 @@ static void notef(avc_macroblock_callbacks_t callbacks, void *opaque,
     callbacks.on_note(opaque, message);
 }
 
-static uint32_t pic_size_in_mbs(const avc_sps_t *sps)
+static void debug_mb(avc_macroblock_callbacks_t callbacks, void *opaque,
+                     uint32_t mb_addr,
+                     const char *fmt, ...)
 {
-    uint32_t width = sps->pic_width_in_mbs_minus1 + 1u;
-    uint32_t height = (sps->pic_height_in_map_units_minus1 + 1u) * (2u - sps->frame_mbs_only_flag);
-    return width * height;
-}
+    const char *debug_mb_env = getenv("AVC_DEBUG_MB");
+    char message[256];
+    va_list ap;
+    char *end = NULL;
+    unsigned long debug_mb_addr;
 
-static uint32_t pic_width_in_mbs(const avc_sps_t *sps)
-{
-    return sps->pic_width_in_mbs_minus1 + 1u;
-}
-
-static int32_t qp_y_from_delta(int32_t previous_qp_y,
-                               int32_t mb_qp_delta,
-                               const avc_sps_t *sps)
-{
-    int32_t qp_bd_offset_y = 6 * (int32_t)sps->bit_depth_luma_minus8;
-    int32_t qp_range = 52 + qp_bd_offset_y;
-    int32_t qp_y = previous_qp_y + mb_qp_delta + 52 + 2 * qp_bd_offset_y;
-
-    qp_y %= qp_range;
-    if (qp_y < 0) {
-        qp_y += qp_range;
-    }
-    return qp_y - qp_bd_offset_y;
-}
-
-static int32_t clip_int32(int32_t value, int32_t min_value, int32_t max_value)
-{
-    if (value < min_value) {
-        return min_value;
-    }
-    if (value > max_value) {
-        return max_value;
-    }
-    return value;
-}
-
-static int32_t qp_chroma_from_luma(int32_t qp_y,
-                                   int32_t chroma_qp_index_offset,
-                                   const avc_sps_t *sps)
-{
-    static const int8_t qp_chroma_map[52] = {
-        0, 1, 2, 3, 4, 5, 6, 7,
-        8, 9, 10, 11, 12, 13, 14, 15,
-        16, 17, 18, 19, 20, 21, 22, 23,
-        24, 25, 26, 27, 28, 29, 29, 30,
-        31, 32, 32, 33, 34, 34, 35, 35,
-        36, 36, 37, 37, 37, 38, 38, 38,
-        39, 39, 39, 39
-    };
-    int32_t qp_bd_offset_c = 6 * (int32_t)sps->bit_depth_chroma_minus8;
-    int32_t qp_i = clip_int32(qp_y + chroma_qp_index_offset, -qp_bd_offset_c, 51);
-
-    if (qp_i < 0) {
-        return qp_i;
-    }
-    return (int32_t)qp_chroma_map[qp_i] + qp_bd_offset_c;
-}
-
-static void fill_chroma_qp(avc_macroblock_event_t *event,
-                           const avc_pps_t *pps,
-                           const avc_sps_t *sps)
-{
-    if (chroma_array_type(sps) == 0) {
-        event->qp_cb = -1;
-        event->qp_cr = -1;
+    if (!debug_mb_env || !*debug_mb_env || !callbacks.on_note) {
         return;
     }
-    event->qp_cb = qp_chroma_from_luma(event->qp_y, pps->chroma_qp_index_offset, sps);
-    event->qp_cr = qp_chroma_from_luma(event->qp_y, pps->second_chroma_qp_index_offset, sps);
+    debug_mb_addr = strtoul(debug_mb_env, &end, 0);
+    if (end == debug_mb_env || *end != '\0' || debug_mb_addr != mb_addr) {
+        return;
+    }
+
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+
+    callbacks.on_note(opaque, message);
 }
 
 static avc_cavlc_scan_t residual_scan_mode(const avc_slice_header_t *slice,
@@ -218,7 +124,7 @@ static unsigned residual_component(avc_residual_kind_t kind,
     if (kind == AVC_RESIDUAL_CHROMA_DC) {
         return block_index < 2 ? block_index + 1u : 0;
     }
-    ac_blocks = chroma_ac_blocks_per_component(chroma_format);
+    ac_blocks = avc_mb_chroma_ac_blocks_per_component(chroma_format);
     if (ac_blocks == 0) {
         return 0;
     }
@@ -325,7 +231,7 @@ static void fill_residual_metadata(avc_residual_event_t *residual,
                                    avc_mb_pred_kind_t pred_kind)
 {
     unsigned component;
-    unsigned chroma_format = chroma_array_type(sps);
+    unsigned chroma_format = avc_mb_chroma_array_type(sps);
     int8_t scaling_index;
     uint8_t present = 0;
     uint8_t use_default = 0;
@@ -449,6 +355,18 @@ static void save_mb_state(avc_mb_state_t *states, uint32_t count,
     }
 }
 
+static int state_is_b_direct(const avc_mb_state_t *state)
+{
+    if (!state || !state->available) {
+        return 1;
+    }
+    if (state->skipped) {
+        return 1;
+    }
+    return state->has_pred && state->pred.partition_count > 0 &&
+           state->pred.direct_flag[0];
+}
+
 static unsigned luma4x4_index_from_xy(unsigned x, unsigned y)
 {
     return ((y >> 1) * 2u + (x >> 1)) * 4u + ((y & 1u) << 1) + (x & 1u);
@@ -519,11 +437,6 @@ static int cavlc_luma_nC(const avc_mb_state_t *curr,
                                     top_available, top_count);
 }
 
-static unsigned chroma_ac_width(unsigned chroma_format)
-{
-    return chroma_format == 3 ? 4u : 2u;
-}
-
 static int cavlc_chroma_ac_nC(const avc_mb_state_t *curr,
                               const avc_mb_state_t *left,
                               const avc_mb_state_t *top,
@@ -531,8 +444,8 @@ static int cavlc_chroma_ac_nC(const avc_mb_state_t *curr,
                               unsigned component,
                               unsigned block)
 {
-    unsigned width = chroma_ac_width(chroma_format);
-    unsigned height = chroma_ac_blocks_per_component(chroma_format) / width;
+    unsigned width = avc_mb_chroma_ac_width(chroma_format);
+    unsigned height = avc_mb_chroma_ac_blocks_per_component(chroma_format) / width;
     unsigned x;
     unsigned y;
     int left_available;
@@ -613,7 +526,7 @@ static void store_residual_nonzero(avc_mb_state_t *curr,
         }
         break;
     case AVC_RESIDUAL_CHROMA_AC:
-        ac_blocks = chroma_ac_blocks_per_component(chroma_format);
+        ac_blocks = avc_mb_chroma_ac_blocks_per_component(chroma_format);
         if (ac_blocks > 0) {
             unsigned component = block_index / ac_blocks;
             unsigned block = block_index % ac_blocks;
@@ -707,8 +620,8 @@ static int cabac_chroma_ac_cbf_neighbors(const avc_mb_state_t *curr,
                                          int *left_coded,
                                          int *top_coded)
 {
-    unsigned width = chroma_ac_width(chroma_format);
-    unsigned height = width ? chroma_ac_blocks_per_component(chroma_format) / width : 0;
+    unsigned width = avc_mb_chroma_ac_width(chroma_format);
+    unsigned height = width ? avc_mb_chroma_ac_blocks_per_component(chroma_format) / width : 0;
     unsigned x;
     unsigned y;
 
@@ -737,8 +650,8 @@ static int cabac_chroma_ac_cbf_neighbors(const avc_mb_state_t *curr,
 static void cavlc_mark_ipcm_nonzero(avc_mb_state_t *state, const avc_sps_t *sps)
 {
     unsigned i;
-    unsigned chroma_format = chroma_array_type(sps);
-    unsigned ac_blocks = chroma_ac_blocks_per_component(chroma_format);
+    unsigned chroma_format = avc_mb_chroma_array_type(sps);
+    unsigned ac_blocks = avc_mb_chroma_ac_blocks_per_component(chroma_format);
 
     if (!state) {
         return;
@@ -759,315 +672,6 @@ static void cavlc_mark_ipcm_nonzero(avc_mb_state_t *state, const avc_sps_t *sps)
     }
 }
 
-static avc_i_mb_type_info_t classify_i_mb_type(uint32_t mb_type)
-{
-    avc_i_mb_type_info_t info;
-    uint32_t coded_block_pattern;
-
-    info = (avc_i_mb_type_info_t){0};
-    if (mb_type == 0) {
-        info.pred_kind = AVC_MB_PRED_INTRA_4X4;
-        return info;
-    }
-    if (mb_type == 25) {
-        info.pred_kind = AVC_MB_PRED_PCM;
-        info.is_pcm = 1;
-        return info;
-    }
-    if (mb_type > 25) {
-        info.pred_kind = AVC_MB_PRED_UNKNOWN;
-        return info;
-    }
-
-    info.pred_kind = AVC_MB_PRED_INTRA_16X16;
-    coded_block_pattern = mb_type - 1u;
-    info.cbp_chroma = (coded_block_pattern / 4u) % 3u;
-    info.cbp_luma = coded_block_pattern >= 12u ? 15u : 0u;
-    return info;
-}
-
-static avc_p_mb_type_info_t classify_p_mb_type(uint32_t mb_type)
-{
-    avc_p_mb_type_info_t info;
-
-    info = (avc_p_mb_type_info_t){0};
-    if (mb_type == 0) {
-        info.shape = AVC_P_MB_L0_16X16;
-    } else if (mb_type == 1) {
-        info.shape = AVC_P_MB_L0_L0_16X8;
-    } else if (mb_type == 2) {
-        info.shape = AVC_P_MB_L0_L0_8X16;
-    } else if (mb_type == 3) {
-        info.shape = AVC_P_MB_8X8;
-    } else if (mb_type == 4) {
-        info.shape = AVC_P_MB_8X8REF0;
-    } else if (mb_type >= 5 && mb_type <= 30) {
-        info.shape = AVC_P_MB_INTRA;
-        info.intra = classify_i_mb_type(mb_type - 5u);
-    }
-    return info;
-}
-
-static avc_b_mb_type_info_t classify_b_mb_type(uint32_t mb_type)
-{
-    static const uint8_t masks[22][2] = {
-        {0, 0}, {1, 0}, {2, 0}, {3, 0},
-        {1, 1}, {1, 1}, {2, 2}, {2, 2},
-        {1, 2}, {1, 2}, {2, 1}, {2, 1},
-        {1, 3}, {1, 3}, {2, 3}, {2, 3},
-        {3, 1}, {3, 1}, {3, 2}, {3, 2},
-        {3, 3}, {3, 3}
-    };
-    avc_b_mb_type_info_t info;
-
-    info = (avc_b_mb_type_info_t){0};
-    if (mb_type == 0) {
-        info.shape = AVC_B_MB_DIRECT;
-        info.partition_count = 1;
-        info.partition_width[0] = 16;
-        info.partition_height[0] = 16;
-    } else if (mb_type >= 1 && mb_type <= 21) {
-        info.shape = AVC_B_MB_INTER;
-        info.partition_count = mb_type <= 3 ? 1u : 2u;
-        info.list_mask[0] = masks[mb_type][0];
-        info.list_mask[1] = masks[mb_type][1];
-        if (mb_type <= 3) {
-            info.partition_width[0] = 16;
-            info.partition_height[0] = 16;
-        } else if ((mb_type & 1u) == 0) {
-            info.partition_width[0] = 16;
-            info.partition_height[0] = 8;
-            info.partition_width[1] = 16;
-            info.partition_height[1] = 8;
-        } else {
-            info.partition_width[0] = 8;
-            info.partition_height[0] = 16;
-            info.partition_width[1] = 8;
-            info.partition_height[1] = 16;
-        }
-    } else if (mb_type == 22) {
-        info.shape = AVC_B_MB_8X8;
-        info.partition_count = 4;
-    } else if (mb_type >= 23 && mb_type <= 48) {
-        info.shape = AVC_B_MB_INTRA;
-        info.intra = classify_i_mb_type(mb_type - 23u);
-    }
-    return info;
-}
-
-static unsigned p_inter_partition_count(avc_p_mb_shape_t shape)
-{
-    switch (shape) {
-    case AVC_P_MB_L0_16X16: return 1;
-    case AVC_P_MB_L0_L0_16X8: return 2;
-    case AVC_P_MB_L0_L0_8X16: return 2;
-    case AVC_P_MB_8X8: return 4;
-    case AVC_P_MB_8X8REF0: return 4;
-    default: return 0;
-    }
-}
-
-static void set_partition_geometry(avc_mb_pred_event_t *pred,
-                                   unsigned partition,
-                                   unsigned x,
-                                   unsigned y,
-                                   unsigned width,
-                                   unsigned height,
-                                   unsigned sub_count,
-                                   unsigned sub_width,
-                                   unsigned sub_height)
-{
-    if (!pred || partition >= 4) {
-        return;
-    }
-    pred->partition_x[partition] = (uint8_t)x;
-    pred->partition_y[partition] = (uint8_t)y;
-    pred->partition_width[partition] = (uint8_t)width;
-    pred->partition_height[partition] = (uint8_t)height;
-    pred->sub_partition_count[partition] = (uint8_t)sub_count;
-    pred->sub_partition_width[partition] = (uint8_t)sub_width;
-    pred->sub_partition_height[partition] = (uint8_t)sub_height;
-}
-
-static void p_sub_partition_shape(unsigned sub_mb_type,
-                                  unsigned *sub_count,
-                                  unsigned *sub_width,
-                                  unsigned *sub_height)
-{
-    if (sub_mb_type == 1) {
-        *sub_count = 2;
-        *sub_width = 8;
-        *sub_height = 4;
-    } else if (sub_mb_type == 2) {
-        *sub_count = 2;
-        *sub_width = 4;
-        *sub_height = 8;
-    } else if (sub_mb_type == 3) {
-        *sub_count = 4;
-        *sub_width = 4;
-        *sub_height = 4;
-    } else {
-        *sub_count = 1;
-        *sub_width = 8;
-        *sub_height = 8;
-    }
-}
-
-static void b_sub_partition_shape(unsigned sub_mb_type,
-                                  unsigned *sub_count,
-                                  unsigned *sub_width,
-                                  unsigned *sub_height)
-{
-    if (sub_mb_type == 4 || sub_mb_type == 6 || sub_mb_type == 8) {
-        *sub_count = 2;
-        *sub_width = 8;
-        *sub_height = 4;
-    } else if (sub_mb_type == 5 || sub_mb_type == 7 || sub_mb_type == 9) {
-        *sub_count = 2;
-        *sub_width = 4;
-        *sub_height = 8;
-    } else if (sub_mb_type == 10 || sub_mb_type == 11 || sub_mb_type == 12) {
-        *sub_count = 4;
-        *sub_width = 4;
-        *sub_height = 4;
-    } else {
-        *sub_count = 1;
-        *sub_width = 8;
-        *sub_height = 8;
-    }
-}
-
-static void set_p_partition_geometry(avc_mb_pred_event_t *pred,
-                                     avc_p_mb_shape_t shape)
-{
-    unsigned i;
-
-    if (!pred) {
-        return;
-    }
-    if (shape == AVC_P_MB_L0_16X16) {
-        set_partition_geometry(pred, 0, 0, 0, 16, 16, 1, 16, 16);
-    } else if (shape == AVC_P_MB_L0_L0_16X8) {
-        set_partition_geometry(pred, 0, 0, 0, 16, 8, 1, 16, 8);
-        set_partition_geometry(pred, 1, 0, 8, 16, 8, 1, 16, 8);
-    } else if (shape == AVC_P_MB_L0_L0_8X16) {
-        set_partition_geometry(pred, 0, 0, 0, 8, 16, 1, 8, 16);
-        set_partition_geometry(pred, 1, 8, 0, 8, 16, 1, 8, 16);
-    } else if (shape == AVC_P_MB_8X8 || shape == AVC_P_MB_8X8REF0) {
-        for (i = 0; i < 4; i++) {
-            unsigned sub_count;
-            unsigned sub_width;
-            unsigned sub_height;
-            p_sub_partition_shape(pred->sub_mb_type[i], &sub_count,
-                                  &sub_width, &sub_height);
-            set_partition_geometry(pred, i, (i & 1u) * 8u, (i >> 1) * 8u,
-                                   8, 8, sub_count, sub_width, sub_height);
-        }
-    }
-}
-
-static void set_b_partition_geometry(avc_mb_pred_event_t *pred,
-                                     const avc_b_mb_type_info_t *info)
-{
-    unsigned i;
-
-    if (!pred || !info) {
-        return;
-    }
-    if (info->shape == AVC_B_MB_8X8) {
-        for (i = 0; i < 4; i++) {
-            unsigned sub_count;
-            unsigned sub_width;
-            unsigned sub_height;
-            b_sub_partition_shape(pred->sub_mb_type[i], &sub_count,
-                                  &sub_width, &sub_height);
-            set_partition_geometry(pred, i, (i & 1u) * 8u, (i >> 1) * 8u,
-                                   8, 8, sub_count, sub_width, sub_height);
-        }
-        return;
-    }
-    for (i = 0; i < info->partition_count && i < 4; i++) {
-        unsigned width = info->partition_width[i] ? info->partition_width[i] : 16u;
-        unsigned height = info->partition_height[i] ? info->partition_height[i] : 16u;
-        unsigned x = width == 8 ? i * 8u : 0u;
-        unsigned y = height == 8 ? i * 8u : 0u;
-        set_partition_geometry(pred, i, x, y, width, height, 1, width, height);
-    }
-}
-
-static void copy_mv_pair(int16_t dst[2], const int16_t src[2])
-{
-    dst[0] = src[0];
-    dst[1] = src[1];
-}
-
-static void populate_sub_partition_motion(avc_mb_pred_event_t *pred)
-{
-    unsigned partition;
-    unsigned out = 0;
-
-    if (!pred) {
-        return;
-    }
-    pred->sub_partition_total = 0;
-    for (partition = 0;
-         partition < pred->partition_count && partition < AVC_MB_PRED_MAX_PARTITIONS;
-         partition++) {
-        unsigned sub_count = pred->sub_partition_count[partition];
-        unsigned sub_width = pred->sub_partition_width[partition];
-        unsigned sub_height = pred->sub_partition_height[partition];
-        unsigned col_count;
-        unsigned sub;
-
-        if (sub_count == 0) {
-            sub_count = 1;
-            sub_width = pred->partition_width[partition];
-            sub_height = pred->partition_height[partition];
-        }
-        col_count = sub_width ? pred->partition_width[partition] / sub_width : 1u;
-        if (col_count == 0) {
-            col_count = 1;
-        }
-        for (sub = 0; sub < sub_count && out < AVC_MB_PRED_MAX_SUB_PARTITIONS; sub++) {
-            pred->sub_partition_parent[out] = (uint8_t)partition;
-            pred->sub_part_x[out] =
-                (uint8_t)(pred->partition_x[partition] + (sub % col_count) * sub_width);
-            pred->sub_part_y[out] =
-                (uint8_t)(pred->partition_y[partition] + (sub / col_count) * sub_height);
-            pred->sub_part_width[out] = (uint8_t)sub_width;
-            pred->sub_part_height[out] = (uint8_t)sub_height;
-            pred->sub_part_list_mask[out] = pred->list_mask[partition];
-            pred->sub_part_direct_flag[out] = pred->direct_flag[partition];
-            pred->sub_part_ref_idx_l0[out] = pred->ref_idx_l0[partition];
-            pred->sub_part_ref_idx_l1[out] = pred->ref_idx_l1[partition];
-            copy_mv_pair(pred->sub_part_mvd_l0[out], pred->mvd_l0[partition]);
-            copy_mv_pair(pred->sub_part_mvd_l1[out], pred->mvd_l1[partition]);
-            copy_mv_pair(pred->sub_part_mv_pred_l0[out], pred->mv_pred_l0[partition]);
-            copy_mv_pair(pred->sub_part_mv_pred_l1[out], pred->mv_pred_l1[partition]);
-            copy_mv_pair(pred->sub_part_mv_l0[out], pred->mv_l0[partition]);
-            copy_mv_pair(pred->sub_part_mv_l1[out], pred->mv_l1[partition]);
-            out++;
-        }
-    }
-    pred->sub_partition_total = out;
-}
-
-static uint8_t b_sub_mb_list_mask(unsigned sub_mb_type)
-{
-    switch (sub_mb_type) {
-    case 0: return 0;
-    case 1: case 4: case 5: case 10: return 1;
-    case 2: case 6: case 7: case 11: return 2;
-    case 3: case 8: case 9: case 12: return 3;
-    default: return 0;
-    }
-}
-
-static int b_sub_mb_is_direct(unsigned sub_mb_type)
-{
-    return sub_mb_type == 0;
-}
-
 static unsigned abs_i16(int16_t value)
 {
     return value < 0 ? (unsigned)(-value) : (unsigned)value;
@@ -1085,32 +689,12 @@ static unsigned neighbor_ref_idx_l0(const avc_mb_state_t *neighbor, unsigned par
     return neighbor->pred.ref_idx_l0[partition];
 }
 
-static unsigned neighbor_ref_idx_l1(const avc_mb_state_t *neighbor, unsigned partition)
-{
-    if (!neighbor || !neighbor->available || !neighbor->has_pred ||
-        neighbor->pred.kind != AVC_MB_PRED_INTER || neighbor->pred.partition_count == 0) {
-        return 0;
-    }
-    if (partition >= neighbor->pred.partition_count) {
-        partition = neighbor->pred.partition_count - 1u;
-    }
-    return neighbor->pred.ref_idx_l1[partition];
-}
-
 static unsigned pred_ref_idx_l0(const avc_mb_pred_event_t *pred, unsigned partition)
 {
     if (!pred || pred->partition_count == 0 || partition >= pred->partition_count) {
         return 0;
     }
     return pred->ref_idx_l0[partition];
-}
-
-static unsigned pred_ref_idx_l1(const avc_mb_pred_event_t *pred, unsigned partition)
-{
-    if (!pred || pred->partition_count == 0 || partition >= pred->partition_count) {
-        return 0;
-    }
-    return pred->ref_idx_l1[partition];
 }
 
 static unsigned neighbor_abs_mvd_l0(const avc_mb_state_t *neighbor,
@@ -1128,21 +712,6 @@ static unsigned neighbor_abs_mvd_l0(const avc_mb_state_t *neighbor,
     return abs_i16(neighbor->pred.mvd_l0[partition][component]);
 }
 
-static unsigned neighbor_abs_mvd_l1(const avc_mb_state_t *neighbor,
-                                    unsigned partition,
-                                    unsigned component)
-{
-    if (!neighbor || !neighbor->available || !neighbor->has_pred ||
-        neighbor->pred.kind != AVC_MB_PRED_INTER || neighbor->pred.partition_count == 0 ||
-        component > 1) {
-        return 0;
-    }
-    if (partition >= neighbor->pred.partition_count) {
-        partition = neighbor->pred.partition_count - 1u;
-    }
-    return abs_i16(neighbor->pred.mvd_l1[partition][component]);
-}
-
 static unsigned pred_abs_mvd_l0(const avc_mb_pred_event_t *pred,
                                 unsigned partition,
                                 unsigned component)
@@ -1152,17 +721,6 @@ static unsigned pred_abs_mvd_l0(const avc_mb_pred_event_t *pred,
         return 0;
     }
     return abs_i16(pred->mvd_l0[partition][component]);
-}
-
-static unsigned pred_abs_mvd_l1(const avc_mb_pred_event_t *pred,
-                                unsigned partition,
-                                unsigned component)
-{
-    if (!pred || pred->partition_count == 0 || partition >= pred->partition_count ||
-        component > 1) {
-        return 0;
-    }
-    return abs_i16(pred->mvd_l1[partition][component]);
 }
 
 static int16_t median_i16(int16_t a, int16_t b, int16_t c)
@@ -1201,31 +759,6 @@ static int neighbor_mv_l0(const avc_mb_state_t *neighbor,
     return 1;
 }
 
-static int neighbor_mv_l1(const avc_mb_state_t *neighbor,
-                          unsigned partition,
-                          unsigned ref_idx,
-                          int16_t mv[2])
-{
-    if (!neighbor || !neighbor->available || !neighbor->has_pred ||
-        neighbor->pred.kind != AVC_MB_PRED_INTER || neighbor->pred.partition_count == 0) {
-        mv[0] = 0;
-        mv[1] = 0;
-        return 0;
-    }
-    if (partition >= neighbor->pred.partition_count) {
-        partition = neighbor->pred.partition_count - 1u;
-    }
-    if ((neighbor->pred.list_mask[partition] & 2u) == 0 ||
-        neighbor->pred.ref_idx_l1[partition] != ref_idx) {
-        mv[0] = 0;
-        mv[1] = 0;
-        return 0;
-    }
-    mv[0] = neighbor->pred.mv_l1[partition][0];
-    mv[1] = neighbor->pred.mv_l1[partition][1];
-    return 1;
-}
-
 static int pred_mv_l0(const avc_mb_pred_event_t *pred,
                       unsigned partition,
                       unsigned ref_idx,
@@ -1242,59 +775,264 @@ static int pred_mv_l0(const avc_mb_pred_event_t *pred,
     return 1;
 }
 
-static int pred_mv_l1(const avc_mb_pred_event_t *pred,
-                      unsigned partition,
-                      unsigned ref_idx,
-                      int16_t mv[2])
+typedef struct {
+    const avc_mb_pred_event_t *pred;
+    unsigned partition;
+    int available;
+} avc_mv_candidate_t;
+
+static int pred_partition_at(const avc_mb_pred_event_t *pred,
+                             unsigned x,
+                             unsigned y,
+                             unsigned *partition)
 {
-    if (!pred || pred->partition_count == 0 || partition >= pred->partition_count ||
-        (pred->list_mask[partition] & 2u) == 0 || pred->ref_idx_l1[partition] != ref_idx) {
+    unsigned i;
+
+    if (!pred || pred->kind != AVC_MB_PRED_INTER || pred->partition_count == 0 ||
+        x >= 16 || y >= 16) {
+        return 0;
+    }
+    for (i = 0; i < pred->partition_count && i < AVC_MB_PRED_MAX_PARTITIONS; i++) {
+        unsigned px = pred->partition_x[i];
+        unsigned py = pred->partition_y[i];
+        unsigned pw = pred->partition_width[i];
+        unsigned ph = pred->partition_height[i];
+
+        if (pw == 0 || ph == 0) {
+            continue;
+        }
+        if (x >= px && x < px + pw && y >= py && y < py + ph) {
+            *partition = i;
+            return 1;
+        }
+    }
+    if (pred->partition_count == 1) {
+        *partition = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static avc_mv_candidate_t current_candidate_at(const avc_mb_pred_event_t *pred,
+                                               int x,
+                                               int y)
+{
+    avc_mv_candidate_t candidate = {0};
+    unsigned partition;
+
+    if (x < 0 || x >= 16 || y < 0 || y >= 16) {
+        return candidate;
+    }
+    if (pred_partition_at(pred, (unsigned)x, (unsigned)y, &partition)) {
+        candidate.pred = pred;
+        candidate.partition = partition;
+        candidate.available = 1;
+    }
+    return candidate;
+}
+
+static avc_mv_candidate_t neighbor_candidate_at(const avc_mb_state_t *neighbor,
+                                                unsigned x,
+                                                unsigned y)
+{
+    avc_mv_candidate_t candidate = {0};
+    unsigned partition;
+
+    if (!neighbor || !neighbor->available || !neighbor->has_pred) {
+        return candidate;
+    }
+    if (pred_partition_at(&neighbor->pred, x, y, &partition)) {
+        candidate.pred = &neighbor->pred;
+        candidate.partition = partition;
+        candidate.available = 1;
+    }
+    return candidate;
+}
+
+static avc_mv_candidate_t mv_candidate_a(const avc_mb_pred_event_t *pred,
+                                         unsigned partition,
+                                         const avc_mb_state_t *left)
+{
+    int x = (int)pred->partition_x[partition] - 1;
+    int y = (int)pred->partition_y[partition] +
+            (int)pred->partition_height[partition] - 1;
+
+    if (x >= 0) {
+        return current_candidate_at(pred, x, y);
+    }
+    if (y >= 0 && y < 16) {
+        return neighbor_candidate_at(left, 15, (unsigned)y);
+    }
+    return (avc_mv_candidate_t){0};
+}
+
+static avc_mv_candidate_t mv_candidate_b(const avc_mb_pred_event_t *pred,
+                                         unsigned partition,
+                                         const avc_mb_state_t *top)
+{
+    int x = (int)pred->partition_x[partition];
+    int y = (int)pred->partition_y[partition] - 1;
+
+    if (y >= 0) {
+        return current_candidate_at(pred, x, y);
+    }
+    if (x >= 0 && x < 16) {
+        return neighbor_candidate_at(top, (unsigned)x, 15);
+    }
+    return (avc_mv_candidate_t){0};
+}
+
+static avc_mv_candidate_t mv_candidate_c(const avc_mb_pred_event_t *pred,
+                                         unsigned partition,
+                                         const avc_mb_state_t *top,
+                                         const avc_mb_state_t *top_right)
+{
+    int x = (int)pred->partition_x[partition] +
+            (int)pred->partition_width[partition];
+    int y = (int)pred->partition_y[partition] - 1;
+
+    if (y >= 0) {
+        if (x >= 0 && x < 16) {
+            return current_candidate_at(pred, x, y);
+        }
+        return (avc_mv_candidate_t){0};
+    }
+    if (x >= 0 && x < 16) {
+        return neighbor_candidate_at(top, (unsigned)x, 15);
+    }
+    if (x >= 16 && x < 32) {
+        return neighbor_candidate_at(top_right, (unsigned)(x - 16), 15);
+    }
+    return (avc_mv_candidate_t){0};
+}
+
+static avc_mv_candidate_t mv_candidate_d(const avc_mb_pred_event_t *pred,
+                                         unsigned partition,
+                                         const avc_mb_state_t *left,
+                                         const avc_mb_state_t *top,
+                                         const avc_mb_state_t *top_left)
+{
+    int x = (int)pred->partition_x[partition] - 1;
+    int y = (int)pred->partition_y[partition] - 1;
+
+    if (x >= 0 && y >= 0) {
+        return current_candidate_at(pred, x, y);
+    }
+    if (x < 0 && y >= 0) {
+        return neighbor_candidate_at(left, 15, (unsigned)y);
+    }
+    if (x >= 0 && y < 0) {
+        return neighbor_candidate_at(top, (unsigned)x, 15);
+    }
+    return neighbor_candidate_at(top_left, 15, 15);
+}
+
+static unsigned candidate_ref_idx_l0(avc_mv_candidate_t candidate)
+{
+    if (!candidate.available || (candidate.pred->list_mask[candidate.partition] & 1u) == 0) {
+        return 0;
+    }
+    return candidate.pred->ref_idx_l0[candidate.partition];
+}
+
+static unsigned candidate_ref_idx_l1(avc_mv_candidate_t candidate)
+{
+    if (!candidate.available || (candidate.pred->list_mask[candidate.partition] & 2u) == 0) {
+        return 0;
+    }
+    return candidate.pred->ref_idx_l1[candidate.partition];
+}
+
+static unsigned candidate_abs_mvd_l0(avc_mv_candidate_t candidate, unsigned component)
+{
+    if (!candidate.available || component > 1 ||
+        (candidate.pred->list_mask[candidate.partition] & 1u) == 0) {
+        return 0;
+    }
+    return abs_i16(candidate.pred->mvd_l0[candidate.partition][component]);
+}
+
+static unsigned candidate_abs_mvd_l1(avc_mv_candidate_t candidate, unsigned component)
+{
+    if (!candidate.available || component > 1 ||
+        (candidate.pred->list_mask[candidate.partition] & 2u) == 0) {
+        return 0;
+    }
+    return abs_i16(candidate.pred->mvd_l1[candidate.partition][component]);
+}
+
+static int candidate_mv_l0(avc_mv_candidate_t candidate, unsigned ref_idx, int16_t mv[2])
+{
+    if (!candidate.available ||
+        (candidate.pred->list_mask[candidate.partition] & 1u) == 0 ||
+        candidate.pred->ref_idx_l0[candidate.partition] != ref_idx) {
         mv[0] = 0;
         mv[1] = 0;
         return 0;
     }
-    mv[0] = pred->mv_l1[partition][0];
-    mv[1] = pred->mv_l1[partition][1];
+    mv[0] = candidate.pred->mv_l0[candidate.partition][0];
+    mv[1] = candidate.pred->mv_l0[candidate.partition][1];
     return 1;
 }
 
-static void p_partition_neighbors(avc_p_mb_shape_t shape, unsigned partition,
-                                  int *left_current, unsigned *left_partition,
-                                  int *top_current, unsigned *top_partition,
-                                  int *top_right_current, unsigned *top_right_partition)
+static int candidate_mv_l1(avc_mv_candidate_t candidate, unsigned ref_idx, int16_t mv[2])
 {
-    *left_current = 0;
-    *top_current = 0;
-    *top_right_current = 0;
-    *left_partition = partition;
-    *top_partition = partition;
-    *top_right_partition = partition;
-
-    if (shape == AVC_P_MB_L0_L0_16X8 && partition == 1) {
-        *top_current = 1;
-        *top_partition = 0;
-    } else if (shape == AVC_P_MB_L0_L0_8X16 && partition == 1) {
-        *left_current = 1;
-        *left_partition = 0;
-    } else if ((shape == AVC_P_MB_8X8 || shape == AVC_P_MB_8X8REF0)) {
-        if (partition == 1) {
-            *left_current = 1;
-            *left_partition = 0;
-        } else if (partition == 2) {
-            *top_current = 1;
-            *top_partition = 0;
-            *top_right_current = 1;
-            *top_right_partition = 3;
-        } else if (partition == 3) {
-            *left_current = 1;
-            *left_partition = 2;
-            *top_current = 1;
-            *top_partition = 1;
-        } else {
-            *top_right_current = 1;
-            *top_right_partition = 1;
-        }
+    if (!candidate.available ||
+        (candidate.pred->list_mask[candidate.partition] & 2u) == 0 ||
+        candidate.pred->ref_idx_l1[candidate.partition] != ref_idx) {
+        mv[0] = 0;
+        mv[1] = 0;
+        return 0;
     }
+    mv[0] = candidate.pred->mv_l1[candidate.partition][0];
+    mv[1] = candidate.pred->mv_l1[candidate.partition][1];
+    return 1;
+}
+
+static unsigned candidate_ref_for_list(avc_mv_candidate_t candidate, unsigned list_bit)
+{
+    if (list_bit == 1u) {
+        return candidate_ref_idx_l0(candidate);
+    }
+    return candidate_ref_idx_l1(candidate);
+}
+
+static unsigned min_direct_ref(unsigned best, int *have, avc_mv_candidate_t candidate,
+                               unsigned list_bit)
+{
+    unsigned ref_idx;
+
+    if (!candidate.available ||
+        (candidate.pred->list_mask[candidate.partition] & list_bit) == 0) {
+        return best;
+    }
+    ref_idx = candidate_ref_for_list(candidate, list_bit);
+    if (!*have || ref_idx < best) {
+        best = ref_idx;
+        *have = 1;
+    }
+    return best;
+}
+
+static void geometry_candidates(const avc_mb_pred_event_t *pred,
+                                unsigned partition,
+                                const avc_mb_state_t *left,
+                                const avc_mb_state_t *top,
+                                const avc_mb_state_t *top_right,
+                                const avc_mb_state_t *top_left,
+                                avc_mv_candidate_t *a,
+                                avc_mv_candidate_t *b,
+                                avc_mv_candidate_t *c)
+{
+    avc_mv_candidate_t candidate_c;
+
+    *a = mv_candidate_a(pred, partition, left);
+    *b = mv_candidate_b(pred, partition, top);
+    candidate_c = mv_candidate_c(pred, partition, top, top_right);
+    if (!candidate_c.available) {
+        candidate_c = mv_candidate_d(pred, partition, left, top, top_left);
+    }
+    *c = candidate_c;
 }
 
 static void derive_partition_mv_l0(avc_mb_pred_event_t *pred,
@@ -1324,7 +1062,7 @@ static void derive_partition_mv_l0(avc_mb_pred_event_t *pred,
     }
 
     ref_idx = pred->ref_idx_l0[partition];
-    p_partition_neighbors(shape, partition, &left_current, &left_partition,
+    avc_p_mb_partition_neighbors(shape, partition, &left_current, &left_partition,
                           &top_current, &top_partition,
                           &top_right_current, &top_right_partition);
     have_a = left_current ? pred_mv_l0(pred, left_partition, ref_idx, a) :
@@ -1366,20 +1104,16 @@ static void derive_partition_mv_l0(avc_mb_pred_event_t *pred,
     pred->mv_l0[partition][1] = (int16_t)(pred->mv_pred_l0[partition][1] + pred->mvd_l0[partition][1]);
 }
 
-static void derive_partition_mv_l1(avc_mb_pred_event_t *pred,
-                                   unsigned partition,
-                                   avc_p_mb_shape_t shape,
-                                   const avc_mb_state_t *left,
-                                   const avc_mb_state_t *top,
-                                   const avc_mb_state_t *top_right,
-                                   const avc_mb_state_t *top_left)
+static void derive_partition_mv_l0_geometry(avc_mb_pred_event_t *pred,
+                                            unsigned partition,
+                                            const avc_mb_state_t *left,
+                                            const avc_mb_state_t *top,
+                                            const avc_mb_state_t *top_right,
+                                            const avc_mb_state_t *top_left)
 {
-    int left_current;
-    int top_current;
-    int top_right_current;
-    unsigned left_partition;
-    unsigned top_partition;
-    unsigned top_right_partition;
+    avc_mv_candidate_t cand_a;
+    avc_mv_candidate_t cand_b;
+    avc_mv_candidate_t cand_c;
     int16_t a[2] = {0, 0};
     int16_t b[2] = {0, 0};
     int16_t c[2] = {0, 0};
@@ -1387,35 +1121,96 @@ static void derive_partition_mv_l1(avc_mb_pred_event_t *pred,
     int have_b;
     int have_c;
     unsigned ref_idx;
+    unsigned width;
+    unsigned height;
 
-    if (!pred || partition >= pred->partition_count || (pred->list_mask[partition] & 2u) == 0) {
+    if (!pred || partition >= pred->partition_count ||
+        (pred->list_mask[partition] & 1u) == 0) {
         return;
     }
+    ref_idx = pred->ref_idx_l0[partition];
+    width = pred->partition_width[partition];
+    height = pred->partition_height[partition];
+    geometry_candidates(pred, partition, left, top, top_right, top_left,
+                        &cand_a, &cand_b, &cand_c);
+    have_a = candidate_mv_l0(cand_a, ref_idx, a);
+    have_b = candidate_mv_l0(cand_b, ref_idx, b);
+    have_c = candidate_mv_l0(cand_c, ref_idx, c);
 
-    ref_idx = pred->ref_idx_l1[partition];
-    p_partition_neighbors(shape, partition, &left_current, &left_partition,
-                          &top_current, &top_partition,
-                          &top_right_current, &top_right_partition);
-    have_a = left_current ? pred_mv_l1(pred, left_partition, ref_idx, a) :
-                            neighbor_mv_l1(left, left_partition, ref_idx, a);
-    have_b = top_current ? pred_mv_l1(pred, top_partition, ref_idx, b) :
-                           neighbor_mv_l1(top, top_partition, ref_idx, b);
-    have_c = top_right_current ? pred_mv_l1(pred, top_right_partition, ref_idx, c) :
-                                 neighbor_mv_l1(top_right, top_right_partition, ref_idx, c);
-    if (!have_c) {
-        have_c = neighbor_mv_l1(top_left, top_partition, ref_idx, c);
+    if (width == 16 && height == 8 && partition == 0 && have_b) {
+        pred->mv_pred_l0[partition][0] = b[0];
+        pred->mv_pred_l0[partition][1] = b[1];
+    } else if (width == 16 && height == 8 && partition == 1 && have_a) {
+        pred->mv_pred_l0[partition][0] = a[0];
+        pred->mv_pred_l0[partition][1] = a[1];
+    } else if (width == 8 && height == 16 && partition == 0 && have_a) {
+        pred->mv_pred_l0[partition][0] = a[0];
+        pred->mv_pred_l0[partition][1] = a[1];
+    } else if (width == 8 && height == 16 && partition == 1 && have_c) {
+        pred->mv_pred_l0[partition][0] = c[0];
+        pred->mv_pred_l0[partition][1] = c[1];
+    } else if (have_a && !have_b && !have_c) {
+        pred->mv_pred_l0[partition][0] = a[0];
+        pred->mv_pred_l0[partition][1] = a[1];
+    } else if (!have_a && have_b && !have_c) {
+        pred->mv_pred_l0[partition][0] = b[0];
+        pred->mv_pred_l0[partition][1] = b[1];
+    } else if (!have_a && !have_b && have_c) {
+        pred->mv_pred_l0[partition][0] = c[0];
+        pred->mv_pred_l0[partition][1] = c[1];
+    } else {
+        pred->mv_pred_l0[partition][0] = median_i16(a[0], b[0], c[0]);
+        pred->mv_pred_l0[partition][1] = median_i16(a[1], b[1], c[1]);
     }
+    pred->mv_l0[partition][0] =
+        (int16_t)(pred->mv_pred_l0[partition][0] + pred->mvd_l0[partition][0]);
+    pred->mv_l0[partition][1] =
+        (int16_t)(pred->mv_pred_l0[partition][1] + pred->mvd_l0[partition][1]);
+}
 
-    if (shape == AVC_P_MB_L0_L0_16X8 && partition == 0 && have_b) {
+static void derive_partition_mv_l1_geometry(avc_mb_pred_event_t *pred,
+                                            unsigned partition,
+                                            const avc_mb_state_t *left,
+                                            const avc_mb_state_t *top,
+                                            const avc_mb_state_t *top_right,
+                                            const avc_mb_state_t *top_left)
+{
+    avc_mv_candidate_t cand_a;
+    avc_mv_candidate_t cand_b;
+    avc_mv_candidate_t cand_c;
+    int16_t a[2] = {0, 0};
+    int16_t b[2] = {0, 0};
+    int16_t c[2] = {0, 0};
+    int have_a;
+    int have_b;
+    int have_c;
+    unsigned ref_idx;
+    unsigned width;
+    unsigned height;
+
+    if (!pred || partition >= pred->partition_count ||
+        (pred->list_mask[partition] & 2u) == 0) {
+        return;
+    }
+    ref_idx = pred->ref_idx_l1[partition];
+    width = pred->partition_width[partition];
+    height = pred->partition_height[partition];
+    geometry_candidates(pred, partition, left, top, top_right, top_left,
+                        &cand_a, &cand_b, &cand_c);
+    have_a = candidate_mv_l1(cand_a, ref_idx, a);
+    have_b = candidate_mv_l1(cand_b, ref_idx, b);
+    have_c = candidate_mv_l1(cand_c, ref_idx, c);
+
+    if (width == 16 && height == 8 && partition == 0 && have_b) {
         pred->mv_pred_l1[partition][0] = b[0];
         pred->mv_pred_l1[partition][1] = b[1];
-    } else if (shape == AVC_P_MB_L0_L0_16X8 && partition == 1 && have_a) {
+    } else if (width == 16 && height == 8 && partition == 1 && have_a) {
         pred->mv_pred_l1[partition][0] = a[0];
         pred->mv_pred_l1[partition][1] = a[1];
-    } else if (shape == AVC_P_MB_L0_L0_8X16 && partition == 0 && have_a) {
+    } else if (width == 8 && height == 16 && partition == 0 && have_a) {
         pred->mv_pred_l1[partition][0] = a[0];
         pred->mv_pred_l1[partition][1] = a[1];
-    } else if (shape == AVC_P_MB_L0_L0_8X16 && partition == 1 && have_c) {
+    } else if (width == 8 && height == 16 && partition == 1 && have_c) {
         pred->mv_pred_l1[partition][0] = c[0];
         pred->mv_pred_l1[partition][1] = c[1];
     } else if (have_a && !have_b && !have_c) {
@@ -1431,68 +1226,41 @@ static void derive_partition_mv_l1(avc_mb_pred_event_t *pred,
         pred->mv_pred_l1[partition][0] = median_i16(a[0], b[0], c[0]);
         pred->mv_pred_l1[partition][1] = median_i16(a[1], b[1], c[1]);
     }
-    pred->mv_l1[partition][0] = (int16_t)(pred->mv_pred_l1[partition][0] + pred->mvd_l1[partition][0]);
-    pred->mv_l1[partition][1] = (int16_t)(pred->mv_pred_l1[partition][1] + pred->mvd_l1[partition][1]);
+    pred->mv_l1[partition][0] =
+        (int16_t)(pred->mv_pred_l1[partition][0] + pred->mvd_l1[partition][0]);
+    pred->mv_l1[partition][1] =
+        (int16_t)(pred->mv_pred_l1[partition][1] + pred->mvd_l1[partition][1]);
 }
 
-static int neighbor_ref_for_direct(const avc_mb_state_t *neighbor,
-                                   unsigned partition,
-                                   unsigned list_bit,
-                                   unsigned *ref_idx)
+static unsigned direct_spatial_ref_idx_geometry(const avc_mb_pred_event_t *pred,
+                                                unsigned partition,
+                                                const avc_mb_state_t *left,
+                                                const avc_mb_state_t *top,
+                                                const avc_mb_state_t *top_right,
+                                                const avc_mb_state_t *top_left,
+                                                unsigned list_bit)
 {
-    if (!neighbor || !neighbor->available || !neighbor->has_pred ||
-        neighbor->pred.kind != AVC_MB_PRED_INTER ||
-        neighbor->pred.partition_count == 0) {
-        return 0;
-    }
-    if (partition >= neighbor->pred.partition_count) {
-        partition = neighbor->pred.partition_count - 1u;
-    }
-    if ((neighbor->pred.list_mask[partition] & list_bit) == 0) {
-        return 0;
-    }
-    *ref_idx = list_bit == 1u ?
-        neighbor->pred.ref_idx_l0[partition] :
-        neighbor->pred.ref_idx_l1[partition];
-    return 1;
-}
-
-static unsigned direct_spatial_ref_idx(const avc_mb_state_t *left,
-                                       const avc_mb_state_t *top,
-                                       const avc_mb_state_t *top_right,
-                                       const avc_mb_state_t *top_left,
-                                       unsigned partition,
-                                       unsigned list_bit)
-{
+    avc_mv_candidate_t cand_a;
+    avc_mv_candidate_t cand_b;
+    avc_mv_candidate_t cand_c;
     unsigned best = 0;
-    unsigned ref_idx;
     int have = 0;
 
-    if (neighbor_ref_for_direct(left, partition, list_bit, &ref_idx)) {
-        best = ref_idx;
-        have = 1;
-    }
-    if (neighbor_ref_for_direct(top, partition, list_bit, &ref_idx) &&
-        (!have || ref_idx < best)) {
-        best = ref_idx;
-        have = 1;
-    }
-    if ((neighbor_ref_for_direct(top_right, partition, list_bit, &ref_idx) ||
-         neighbor_ref_for_direct(top_left, partition, list_bit, &ref_idx)) &&
-        (!have || ref_idx < best)) {
-        best = ref_idx;
-    }
+    geometry_candidates(pred, partition, left, top, top_right, top_left,
+                        &cand_a, &cand_b, &cand_c);
+    best = min_direct_ref(best, &have, cand_a, list_bit);
+    best = min_direct_ref(best, &have, cand_b, list_bit);
+    best = min_direct_ref(best, &have, cand_c, list_bit);
     return best;
 }
 
-static void derive_direct_partition(avc_mb_pred_event_t *pred,
-                                    unsigned partition,
-                                    avc_p_mb_shape_t shape,
-                                    const avc_slice_header_t *slice,
-                                    const avc_mb_state_t *left,
-                                    const avc_mb_state_t *top,
-                                    const avc_mb_state_t *top_right,
-                                    const avc_mb_state_t *top_left)
+static void derive_direct_partition_geometry(avc_mb_pred_event_t *pred,
+                                             unsigned partition,
+                                             const avc_slice_header_t *slice,
+                                             const avc_mb_state_t *left,
+                                             const avc_mb_state_t *top,
+                                             const avc_mb_state_t *top_right,
+                                             const avc_mb_state_t *top_left)
 {
     if (!pred || partition >= pred->partition_count || !pred->direct_flag[partition]) {
         return;
@@ -1518,12 +1286,14 @@ static void derive_direct_partition(avc_mb_pred_event_t *pred,
         return;
     }
 
-    pred->ref_idx_l0[partition] = direct_spatial_ref_idx(left, top, top_right,
-                                                        top_left, partition, 1);
-    pred->ref_idx_l1[partition] = direct_spatial_ref_idx(left, top, top_right,
-                                                        top_left, partition, 2);
-    derive_partition_mv_l0(pred, partition, shape, left, top, top_right, top_left);
-    derive_partition_mv_l1(pred, partition, shape, left, top, top_right, top_left);
+    pred->ref_idx_l0[partition] =
+        direct_spatial_ref_idx_geometry(pred, partition, left, top, top_right,
+                                        top_left, 1);
+    pred->ref_idx_l1[partition] =
+        direct_spatial_ref_idx_geometry(pred, partition, left, top, top_right,
+                                        top_left, 2);
+    derive_partition_mv_l0_geometry(pred, partition, left, top, top_right, top_left);
+    derive_partition_mv_l1_geometry(pred, partition, left, top, top_right, top_left);
 }
 
 static int cabac_parse_intra_mb_pred(avc_cabac_decoder_t *cabac,
@@ -1584,7 +1354,7 @@ static int cabac_parse_p_inter_mb_pred(avc_cabac_decoder_t *cabac,
 {
     avc_mb_pred_event_t pred;
     unsigned i;
-    unsigned partitions = p_inter_partition_count(shape);
+    unsigned partitions = avc_p_inter_partition_count(shape);
     int force_ref0 = shape == AVC_P_MB_8X8REF0;
 
     pred = (avc_mb_pred_event_t){0};
@@ -1602,7 +1372,7 @@ static int cabac_parse_p_inter_mb_pred(avc_cabac_decoder_t *cabac,
             }
         }
     }
-    set_p_partition_geometry(&pred, shape);
+    avc_p_mb_set_partition_geometry(&pred, shape);
 
     if (!force_ref0 && slice->num_ref_idx_l0_active_minus1 > 0) {
         for (i = 0; i < partitions; i++) {
@@ -1615,7 +1385,7 @@ static int cabac_parse_p_inter_mb_pred(avc_cabac_decoder_t *cabac,
             unsigned left_ref;
             unsigned top_ref;
 
-            p_partition_neighbors(shape, i, &left_current, &left_partition,
+            avc_p_mb_partition_neighbors(shape, i, &left_current, &left_partition,
                                   &top_current, &top_partition,
                                   &top_right_current, &top_right_partition);
             left_ref = left_current ? pred_ref_idx_l0(&pred, left_partition) :
@@ -1641,7 +1411,7 @@ static int cabac_parse_p_inter_mb_pred(avc_cabac_decoder_t *cabac,
         unsigned left_mvd_y;
         unsigned top_mvd_y;
 
-        p_partition_neighbors(shape, i, &left_current, &left_partition,
+        avc_p_mb_partition_neighbors(shape, i, &left_current, &left_partition,
                               &top_current, &top_partition,
                               &top_right_current, &top_right_partition);
         left_mvd_x = left_current ? pred_abs_mvd_l0(&pred, left_partition, 0) :
@@ -1664,7 +1434,7 @@ static int cabac_parse_p_inter_mb_pred(avc_cabac_decoder_t *cabac,
         derive_partition_mv_l0(&pred, i, shape, left, top, top_right, top_left);
     }
 
-    populate_sub_partition_motion(&pred);
+    avc_mb_populate_sub_partition_motion(&pred);
     if (out_pred) {
         *out_pred = pred;
     }
@@ -1703,38 +1473,30 @@ static int cabac_parse_b_inter_mb_pred(avc_cabac_decoder_t *cabac,
             if (!avc_cabac_decode_sub_mb_type_b(cabac, &pred.sub_mb_type[i])) {
                 return 0;
             }
-            pred.direct_flag[i] = (uint8_t)b_sub_mb_is_direct(pred.sub_mb_type[i]);
-            pred.list_mask[i] = b_sub_mb_list_mask(pred.sub_mb_type[i]);
+            pred.direct_flag[i] = (uint8_t)avc_b_sub_mb_is_direct(pred.sub_mb_type[i]);
+            pred.list_mask[i] = avc_b_sub_mb_list_mask(pred.sub_mb_type[i]);
         }
     } else {
         for (i = 0; i < info.partition_count; i++) {
             pred.list_mask[i] = info.list_mask[i];
         }
     }
-    set_b_partition_geometry(&pred, &info);
+    avc_b_mb_set_partition_geometry(&pred, &info);
 
     if (slice->num_ref_idx_l0_active_minus1 > 0) {
         for (i = 0; i < pred.partition_count; i++) {
-            int left_current;
-            int top_current;
-            unsigned left_partition;
-            unsigned top_partition;
-            int top_right_current;
-            unsigned top_right_partition;
+            avc_mv_candidate_t cand_a;
+            avc_mv_candidate_t cand_b;
             unsigned left_ref;
             unsigned top_ref;
 
             if ((pred.list_mask[i] & 1u) == 0) {
                 continue;
             }
-            p_partition_neighbors(info.shape == AVC_B_MB_8X8 ? AVC_P_MB_8X8 : AVC_P_MB_L0_L0_16X8,
-                                  i, &left_current, &left_partition,
-                                  &top_current, &top_partition,
-                                  &top_right_current, &top_right_partition);
-            left_ref = left_current ? pred_ref_idx_l0(&pred, left_partition) :
-                                      neighbor_ref_idx_l0(left, left_partition);
-            top_ref = top_current ? pred_ref_idx_l0(&pred, top_partition) :
-                                    neighbor_ref_idx_l0(top, top_partition);
+            cand_a = mv_candidate_a(&pred, i, left);
+            cand_b = mv_candidate_b(&pred, i, top);
+            left_ref = candidate_ref_idx_l0(cand_a);
+            top_ref = candidate_ref_idx_l0(cand_b);
             if (!avc_cabac_decode_ref_idx_l0(cabac, left_ref != 0, top_ref != 0,
                                              &pred.ref_idx_l0[i])) {
                 return 0;
@@ -1743,26 +1505,18 @@ static int cabac_parse_b_inter_mb_pred(avc_cabac_decoder_t *cabac,
     }
     if (slice->num_ref_idx_l1_active_minus1 > 0) {
         for (i = 0; i < pred.partition_count; i++) {
-            int left_current;
-            int top_current;
-            unsigned left_partition;
-            unsigned top_partition;
-            int top_right_current;
-            unsigned top_right_partition;
+            avc_mv_candidate_t cand_a;
+            avc_mv_candidate_t cand_b;
             unsigned left_ref;
             unsigned top_ref;
 
             if ((pred.list_mask[i] & 2u) == 0) {
                 continue;
             }
-            p_partition_neighbors(info.shape == AVC_B_MB_8X8 ? AVC_P_MB_8X8 : AVC_P_MB_L0_L0_16X8,
-                                  i, &left_current, &left_partition,
-                                  &top_current, &top_partition,
-                                  &top_right_current, &top_right_partition);
-            left_ref = left_current ? pred_ref_idx_l1(&pred, left_partition) :
-                                      neighbor_ref_idx_l1(left, left_partition);
-            top_ref = top_current ? pred_ref_idx_l1(&pred, top_partition) :
-                                    neighbor_ref_idx_l1(top, top_partition);
+            cand_a = mv_candidate_a(&pred, i, left);
+            cand_b = mv_candidate_b(&pred, i, top);
+            left_ref = candidate_ref_idx_l1(cand_a);
+            top_ref = candidate_ref_idx_l1(cand_b);
             if (!avc_cabac_decode_ref_idx_l1(cabac, left_ref != 0, top_ref != 0,
                                              &pred.ref_idx_l1[i])) {
                 return 0;
@@ -1771,59 +1525,39 @@ static int cabac_parse_b_inter_mb_pred(avc_cabac_decoder_t *cabac,
     }
 
     for (i = 0; i < pred.partition_count; i++) {
-        int left_current;
-        int top_current;
-        int top_right_current;
-        unsigned left_partition;
-        unsigned top_partition;
-        unsigned top_right_partition;
-        avc_p_mb_shape_t neighbor_shape = info.shape == AVC_B_MB_8X8 ? AVC_P_MB_8X8 : AVC_P_MB_L0_L0_16X8;
+        avc_mv_candidate_t cand_a = mv_candidate_a(&pred, i, left);
+        avc_mv_candidate_t cand_b = mv_candidate_b(&pred, i, top);
 
-        p_partition_neighbors(neighbor_shape, i, &left_current, &left_partition,
-                              &top_current, &top_partition,
-                              &top_right_current, &top_right_partition);
         if (pred.direct_flag[i]) {
-            avc_p_mb_shape_t direct_shape = info.shape == AVC_B_MB_8X8 ?
-                AVC_P_MB_8X8 : AVC_P_MB_L0_16X16;
-            derive_direct_partition(&pred, i, direct_shape, slice,
-                                    left, top, top_right, top_left);
+            derive_direct_partition_geometry(&pred, i, slice, left, top,
+                                             top_right, top_left);
             continue;
         }
         if (pred.list_mask[i] & 1u) {
-            unsigned left_x = left_current ? pred_abs_mvd_l0(&pred, left_partition, 0) :
-                                             neighbor_abs_mvd_l0(left, left_partition, 0);
-            unsigned top_x = top_current ? pred_abs_mvd_l0(&pred, top_partition, 0) :
-                                           neighbor_abs_mvd_l0(top, top_partition, 0);
-            unsigned left_y = left_current ? pred_abs_mvd_l0(&pred, left_partition, 1) :
-                                             neighbor_abs_mvd_l0(left, left_partition, 1);
-            unsigned top_y = top_current ? pred_abs_mvd_l0(&pred, top_partition, 1) :
-                                           neighbor_abs_mvd_l0(top, top_partition, 1);
+            unsigned left_x = candidate_abs_mvd_l0(cand_a, 0);
+            unsigned top_x = candidate_abs_mvd_l0(cand_b, 0);
+            unsigned left_y = candidate_abs_mvd_l0(cand_a, 1);
+            unsigned top_y = candidate_abs_mvd_l0(cand_b, 1);
             if (!avc_cabac_decode_mvd_component(cabac, 40, left_x, top_x, &pred.mvd_l0[i][0]) ||
                 !avc_cabac_decode_mvd_component(cabac, 47, left_y, top_y, &pred.mvd_l0[i][1])) {
                 return 0;
             }
-            derive_partition_mv_l0(&pred, i, neighbor_shape, left, top,
-                                   top_right, top_left);
+            derive_partition_mv_l0_geometry(&pred, i, left, top, top_right, top_left);
         }
         if (pred.list_mask[i] & 2u) {
-            unsigned left_x = left_current ? pred_abs_mvd_l1(&pred, left_partition, 0) :
-                                             neighbor_abs_mvd_l1(left, left_partition, 0);
-            unsigned top_x = top_current ? pred_abs_mvd_l1(&pred, top_partition, 0) :
-                                           neighbor_abs_mvd_l1(top, top_partition, 0);
-            unsigned left_y = left_current ? pred_abs_mvd_l1(&pred, left_partition, 1) :
-                                             neighbor_abs_mvd_l1(left, left_partition, 1);
-            unsigned top_y = top_current ? pred_abs_mvd_l1(&pred, top_partition, 1) :
-                                           neighbor_abs_mvd_l1(top, top_partition, 1);
+            unsigned left_x = candidate_abs_mvd_l1(cand_a, 0);
+            unsigned top_x = candidate_abs_mvd_l1(cand_b, 0);
+            unsigned left_y = candidate_abs_mvd_l1(cand_a, 1);
+            unsigned top_y = candidate_abs_mvd_l1(cand_b, 1);
             if (!avc_cabac_decode_mvd_component(cabac, 40, left_x, top_x, &pred.mvd_l1[i][0]) ||
                 !avc_cabac_decode_mvd_component(cabac, 47, left_y, top_y, &pred.mvd_l1[i][1])) {
                 return 0;
             }
-            derive_partition_mv_l1(&pred, i, neighbor_shape, left, top,
-                                   top_right, top_left);
+            derive_partition_mv_l1_geometry(&pred, i, left, top, top_right, top_left);
         }
     }
 
-    populate_sub_partition_motion(&pred);
+    avc_mb_populate_sub_partition_motion(&pred);
     if (out_pred) {
         *out_pred = pred;
     }
@@ -1851,10 +1585,10 @@ static void emit_b_direct_pred(uint32_t mb_addr,
     pred.partition_count = 1;
     pred.direct_flag[0] = 1;
     pred.direct_spatial_mv_pred_flag = slice->direct_spatial_mv_pred_flag;
-    set_partition_geometry(&pred, 0, 0, 0, 16, 16, 1, 16, 16);
-    derive_direct_partition(&pred, 0, AVC_P_MB_L0_16X16, slice,
-                            left, top, top_right, top_left);
-    populate_sub_partition_motion(&pred);
+    avc_mb_set_partition_geometry(&pred, 0, 0, 0, 16, 16, 1, 16, 16);
+    derive_direct_partition_geometry(&pred, 0, slice, left, top,
+                                     top_right, top_left);
+    avc_mb_populate_sub_partition_motion(&pred);
     if (out_pred) {
         *out_pred = pred;
     }
@@ -1880,7 +1614,7 @@ static void emit_p_skip_pred(uint32_t mb_addr,
     pred.partition_count = 1;
     pred.list_mask[0] = 1;
     pred.ref_idx_l0[0] = 0;
-    set_partition_geometry(&pred, 0, 0, 0, 16, 16, 1, 16, 16);
+    avc_mb_set_partition_geometry(&pred, 0, 0, 0, 16, 16, 1, 16, 16);
     {
         int16_t mv_a[2] = {0, 0};
         int16_t mv_b[2] = {0, 0};
@@ -1899,7 +1633,7 @@ static void emit_p_skip_pred(uint32_t mb_addr,
                                    top_right, top_left);
         }
     }
-    populate_sub_partition_motion(&pred);
+    avc_mb_populate_sub_partition_motion(&pred);
     if (out_pred) {
         *out_pred = pred;
     }
@@ -1942,12 +1676,12 @@ static int cabac_fill_coeff_coords(avc_residual_event_t *residual,
         switch (residual->block_kind) {
         case AVC_RESIDUAL_LUMA_4X4:
         case AVC_RESIDUAL_LUMA_16X16_AC:
-            if (!luma4x4_block_origin(residual->block_index, &origin_x, &origin_y)) {
+            if (!avc_mb_luma4x4_block_origin(residual->block_index, &origin_x, &origin_y)) {
                 return 0;
             }
             break;
         case AVC_RESIDUAL_LUMA_8X8:
-            if (!luma8x8_block_origin(residual->block_index, &origin_x, &origin_y)) {
+            if (!avc_mb_luma8x8_block_origin(residual->block_index, &origin_x, &origin_y)) {
                 return 0;
             }
             break;
@@ -1958,9 +1692,9 @@ static int cabac_fill_coeff_coords(avc_residual_event_t *residual,
             residual->coeff_mb_y[i] = residual->cabac_block.coeff_y[i] * 4u;
             continue;
         case AVC_RESIDUAL_CHROMA_AC:
-            ac_blocks = chroma_ac_blocks_per_component(chroma_format);
+            ac_blocks = avc_mb_chroma_ac_blocks_per_component(chroma_format);
             if (ac_blocks == 0 ||
-                !chroma4x4_block_origin(chroma_format, residual->block_index % ac_blocks,
+                !avc_mb_chroma4x4_block_origin(chroma_format, residual->block_index % ac_blocks,
                                         &origin_x, &origin_y)) {
                 return 0;
             }
@@ -2114,42 +1848,6 @@ static int cabac_emit_luma_residuals(avc_cabac_decoder_t *cabac,
     return !cabac->error;
 }
 
-static unsigned chroma_array_type(const avc_sps_t *sps)
-{
-    if (sps->separate_colour_plane_flag) {
-        return 0;
-    }
-    return sps->chroma_format_idc;
-}
-
-static unsigned chroma_dc_coeffs(unsigned chroma_format_idc)
-{
-    if (chroma_format_idc == 1) {
-        return 4;
-    }
-    if (chroma_format_idc == 2) {
-        return 8;
-    }
-    if (chroma_format_idc == 3) {
-        return 16;
-    }
-    return 0;
-}
-
-static unsigned chroma_ac_blocks_per_component(unsigned chroma_format_idc)
-{
-    if (chroma_format_idc == 1) {
-        return 4;
-    }
-    if (chroma_format_idc == 2) {
-        return 8;
-    }
-    if (chroma_format_idc == 3) {
-        return 16;
-    }
-    return 0;
-}
-
 static int cabac_emit_chroma_residuals(avc_cabac_decoder_t *cabac,
                                        uint32_t mb_addr,
                                        const avc_pps_t *pps,
@@ -2164,9 +1862,9 @@ static int cabac_emit_chroma_residuals(avc_cabac_decoder_t *cabac,
                                        avc_macroblock_callbacks_t callbacks,
                                        void *opaque)
 {
-    unsigned chroma_format = chroma_array_type(sps);
-    unsigned dc_coeffs = chroma_dc_coeffs(chroma_format);
-    unsigned ac_blocks = chroma_ac_blocks_per_component(chroma_format);
+    unsigned chroma_format = avc_mb_chroma_array_type(sps);
+    unsigned dc_coeffs = avc_mb_chroma_dc_coeffs(chroma_format);
+    unsigned ac_blocks = avc_mb_chroma_ac_blocks_per_component(chroma_format);
     unsigned component;
 
     if (cbp_chroma == 0 || chroma_format == 0) {
@@ -2210,17 +1908,28 @@ static int cabac_emit_chroma_residuals(avc_cabac_decoder_t *cabac,
 
 static int cabac_consume_ipcm(avc_cabac_decoder_t *cabac,
                               const avc_sps_t *sps,
-                              avc_macroblock_event_t *event)
+                              avc_macroblock_event_t *event,
+                              unsigned *pcm_bit_pos,
+                              unsigned *backup_bytes_out)
 {
-    uint32_t i;
-    unsigned chroma_format = chroma_array_type(sps);
+    unsigned chroma_format = avc_mb_chroma_array_type(sps);
     unsigned luma_bits = sps->bit_depth_luma_minus8 + 8u;
     unsigned chroma_bits = sps->bit_depth_chroma_minus8 + 8u;
     uint32_t chroma_samples_per_component = 0;
+    size_t pcm_offset;
+    size_t pcm_size_bits;
+    size_t pcm_size_bytes;
+    unsigned backup_bytes = (cabac->cod_i_offset & 1u) ? 1u : 0u;
 
     if (luma_bits > 32 || chroma_bits > 32) {
         cabac->error = 1;
         return 0;
+    }
+    if (pcm_bit_pos) {
+        *pcm_bit_pos = 0;
+    }
+    if (backup_bytes_out) {
+        *backup_bytes_out = 0;
     }
 
     if (chroma_format == 1) {
@@ -2231,21 +1940,43 @@ static int cabac_consume_ipcm(avc_cabac_decoder_t *cabac,
         chroma_samples_per_component = 256;
     }
 
-    avc_cabac_byte_align(cabac);
-    if (cabac->error) {
-        return 0;
-    }
-
     event->pcm_sample_bits_luma = (int)luma_bits;
     event->pcm_sample_bits_chroma = chroma_format == 0 ? 0 : (int)chroma_bits;
     event->pcm_luma_samples = 256;
     event->pcm_chroma_samples = chroma_samples_per_component * 2u;
 
-    for (i = 0; i < event->pcm_luma_samples; i++) {
-        avc_cabac_read_pcm_bits(cabac, luma_bits);
+    /*
+     * After the terminating I_PCM bin, the arithmetic decoder may have already
+     * prefetched bits from the raw PCM payload. Resume from the raw byte
+     * boundary before those lookahead bits, then reinitialize CABAC after the
+     * PCM sample bytes.
+     */
+    pcm_offset = (cabac->bit_pos + 7u) >> 3;
+    if (backup_bytes > pcm_offset) {
+        cabac->error = 1;
+        return 0;
     }
-    for (i = 0; i < event->pcm_chroma_samples; i++) {
-        avc_cabac_read_pcm_bits(cabac, chroma_bits);
+    pcm_offset -= backup_bytes;
+
+    pcm_size_bits = (size_t)event->pcm_luma_samples * luma_bits +
+                    (size_t)event->pcm_chroma_samples * chroma_bits;
+    if ((pcm_size_bits & 7u) != 0) {
+        cabac->error = 1;
+        return 0;
+    }
+    pcm_size_bytes = pcm_size_bits >> 3;
+    if (pcm_offset > cabac->size || pcm_size_bytes > cabac->size - pcm_offset) {
+        cabac->error = 1;
+        return 0;
+    }
+
+    avc_cabac_init(cabac, cabac->data + pcm_offset + pcm_size_bytes,
+                   cabac->size - pcm_offset - pcm_size_bytes);
+    if (pcm_bit_pos) {
+        *pcm_bit_pos = (unsigned)(pcm_offset * 8u);
+    }
+    if (backup_bytes_out) {
+        *backup_bytes_out = backup_bytes;
     }
     return !cabac->error;
 }
@@ -2327,7 +2058,7 @@ static int cavlc_parse_p_inter_mb_pred(avc_bitreader_t *br,
 {
     avc_mb_pred_event_t pred;
     unsigned i;
-    unsigned partitions = p_inter_partition_count(shape);
+    unsigned partitions = avc_p_inter_partition_count(shape);
     int force_ref0 = shape == AVC_P_MB_8X8REF0;
 
     pred = (avc_mb_pred_event_t){0};
@@ -2343,7 +2074,7 @@ static int cavlc_parse_p_inter_mb_pred(avc_bitreader_t *br,
             pred.sub_mb_type[i] = avc_br_read_ue(br);
         }
     }
-    set_p_partition_geometry(&pred, shape);
+    avc_p_mb_set_partition_geometry(&pred, shape);
     if (!force_ref0 && slice->num_ref_idx_l0_active_minus1 > 0) {
         for (i = 0; i < partitions; i++) {
             pred.ref_idx_l0[i] = avc_br_read_ue(br);
@@ -2354,7 +2085,7 @@ static int cavlc_parse_p_inter_mb_pred(avc_bitreader_t *br,
         pred.mvd_l0[i][1] = (int16_t)avc_br_read_se(br);
         derive_partition_mv_l0(&pred, i, shape, left, top, top_right, top_left);
     }
-    populate_sub_partition_motion(&pred);
+    avc_mb_populate_sub_partition_motion(&pred);
     if (out_pred) {
         *out_pred = pred;
     }
@@ -2390,15 +2121,15 @@ static int cavlc_parse_b_inter_mb_pred(avc_bitreader_t *br,
     } else if (info.shape == AVC_B_MB_8X8) {
         for (i = 0; i < 4; i++) {
             pred.sub_mb_type[i] = avc_br_read_ue(br);
-            pred.direct_flag[i] = (uint8_t)b_sub_mb_is_direct(pred.sub_mb_type[i]);
-            pred.list_mask[i] = b_sub_mb_list_mask(pred.sub_mb_type[i]);
+            pred.direct_flag[i] = (uint8_t)avc_b_sub_mb_is_direct(pred.sub_mb_type[i]);
+            pred.list_mask[i] = avc_b_sub_mb_list_mask(pred.sub_mb_type[i]);
         }
     } else {
         for (i = 0; i < info.partition_count; i++) {
             pred.list_mask[i] = info.list_mask[i];
         }
     }
-    set_b_partition_geometry(&pred, &info);
+    avc_b_mb_set_partition_geometry(&pred, &info);
 
     if (slice->num_ref_idx_l0_active_minus1 > 0) {
         for (i = 0; i < pred.partition_count; i++) {
@@ -2416,29 +2147,24 @@ static int cavlc_parse_b_inter_mb_pred(avc_bitreader_t *br,
     }
 
     for (i = 0; i < pred.partition_count; i++) {
-        avc_p_mb_shape_t neighbor_shape = info.shape == AVC_B_MB_8X8 ? AVC_P_MB_8X8 : AVC_P_MB_L0_L0_16X8;
         if (pred.direct_flag[i]) {
-            avc_p_mb_shape_t direct_shape = info.shape == AVC_B_MB_8X8 ?
-                AVC_P_MB_8X8 : AVC_P_MB_L0_16X16;
-            derive_direct_partition(&pred, i, direct_shape, slice,
-                                    left, top, top_right, top_left);
+            derive_direct_partition_geometry(&pred, i, slice, left, top,
+                                             top_right, top_left);
             continue;
         }
         if (pred.list_mask[i] & 1u) {
             pred.mvd_l0[i][0] = (int16_t)avc_br_read_se(br);
             pred.mvd_l0[i][1] = (int16_t)avc_br_read_se(br);
-            derive_partition_mv_l0(&pred, i, neighbor_shape, left, top,
-                                   top_right, top_left);
+            derive_partition_mv_l0_geometry(&pred, i, left, top, top_right, top_left);
         }
         if (pred.list_mask[i] & 2u) {
             pred.mvd_l1[i][0] = (int16_t)avc_br_read_se(br);
             pred.mvd_l1[i][1] = (int16_t)avc_br_read_se(br);
-            derive_partition_mv_l1(&pred, i, neighbor_shape, left, top,
-                                   top_right, top_left);
+            derive_partition_mv_l1_geometry(&pred, i, left, top, top_right, top_left);
         }
     }
 
-    populate_sub_partition_motion(&pred);
+    avc_mb_populate_sub_partition_motion(&pred);
     if (out_pred) {
         *out_pred = pred;
     }
@@ -2446,60 +2172,6 @@ static int cavlc_parse_b_inter_mb_pred(avc_bitreader_t *br,
         callbacks.on_mb_pred(opaque, &pred);
     }
     return !br->error;
-}
-
-static int luma4x4_block_origin(unsigned block_index, unsigned *x, unsigned *y)
-{
-    unsigned group = block_index / 4u;
-    unsigned sub = block_index & 3u;
-
-    if (block_index >= 16) {
-        return 0;
-    }
-    *x = ((group & 1u) * 8u) + ((sub & 1u) * 4u);
-    *y = ((group >> 1) * 8u) + ((sub >> 1) * 4u);
-    return 1;
-}
-
-static int luma8x8_block_origin(unsigned block_index, unsigned *x, unsigned *y)
-{
-    if (block_index >= 4) {
-        return 0;
-    }
-    *x = (block_index & 1u) * 8u;
-    *y = (block_index >> 1) * 8u;
-    return 1;
-}
-
-static int chroma4x4_block_origin(unsigned chroma_format,
-                                  unsigned component_block_index,
-                                  unsigned *x,
-                                  unsigned *y)
-{
-    unsigned blocks_wide;
-
-    if (chroma_format == 1) {
-        if (component_block_index >= 4) {
-            return 0;
-        }
-        blocks_wide = 2;
-    } else if (chroma_format == 2) {
-        if (component_block_index >= 8) {
-            return 0;
-        }
-        blocks_wide = 2;
-    } else if (chroma_format == 3) {
-        if (component_block_index >= 16) {
-            return 0;
-        }
-        return luma4x4_block_origin(component_block_index, x, y);
-    } else {
-        return 0;
-    }
-
-    *x = (component_block_index % blocks_wide) * 4u;
-    *y = (component_block_index / blocks_wide) * 4u;
-    return 1;
 }
 
 static int cavlc_fill_macroblock_coeff_coords(avc_residual_event_t *residual,
@@ -2515,7 +2187,7 @@ static int cavlc_fill_macroblock_coeff_coords(avc_residual_event_t *residual,
         case AVC_RESIDUAL_LUMA_4X4:
         case AVC_RESIDUAL_LUMA_8X8:
         case AVC_RESIDUAL_LUMA_16X16_AC:
-            if (!luma4x4_block_origin(residual->block_index, &origin_x, &origin_y)) {
+            if (!avc_mb_luma4x4_block_origin(residual->block_index, &origin_x, &origin_y)) {
                 return 0;
             }
             residual->coeff_mb_x[i] = origin_x + residual->block.coeff_x[i];
@@ -2526,9 +2198,9 @@ static int cavlc_fill_macroblock_coeff_coords(avc_residual_event_t *residual,
             residual->coeff_mb_y[i] = residual->block.coeff_y[i] * 4u;
             break;
         case AVC_RESIDUAL_CHROMA_AC:
-            ac_blocks = chroma_ac_blocks_per_component(chroma_format);
+            ac_blocks = avc_mb_chroma_ac_blocks_per_component(chroma_format);
             if (ac_blocks == 0 ||
-                !chroma4x4_block_origin(chroma_format, residual->block_index % ac_blocks,
+                !avc_mb_chroma4x4_block_origin(chroma_format, residual->block_index % ac_blocks,
                                         &origin_x, &origin_y)) {
                 return 0;
             }
@@ -2678,9 +2350,9 @@ static int cavlc_emit_chroma_residuals(avc_bitreader_t *br,
                                        avc_macroblock_callbacks_t callbacks,
                                        void *opaque)
 {
-    unsigned chroma_format = chroma_array_type(sps);
-    unsigned dc_coeffs = chroma_dc_coeffs(chroma_format);
-    unsigned ac_blocks = chroma_ac_blocks_per_component(chroma_format);
+    unsigned chroma_format = avc_mb_chroma_array_type(sps);
+    unsigned dc_coeffs = avc_mb_chroma_dc_coeffs(chroma_format);
+    unsigned ac_blocks = avc_mb_chroma_ac_blocks_per_component(chroma_format);
     unsigned component;
 
     if (cbp_chroma == 0 || chroma_format == 0) {
@@ -2720,7 +2392,7 @@ static int cavlc_consume_ipcm(avc_bitreader_t *br,
                               avc_macroblock_event_t *event)
 {
     uint32_t i;
-    unsigned chroma_format = chroma_array_type(sps);
+    unsigned chroma_format = avc_mb_chroma_array_type(sps);
     unsigned luma_bits = sps->bit_depth_luma_minus8 + 8u;
     unsigned chroma_bits = sps->bit_depth_chroma_minus8 + 8u;
     uint32_t chroma_samples_per_component = 0;
@@ -2767,8 +2439,8 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                                   avc_slice_data_summary_t *summary)
 {
     uint32_t mb_addr = slice->first_mb_in_slice;
-    uint32_t max_mbs = pic_size_in_mbs(sps);
-    uint32_t width = pic_width_in_mbs(sps);
+    uint32_t max_mbs = avc_mb_pic_size_in_mbs(sps);
+    uint32_t width = avc_mb_pic_width_in_mbs(sps);
     int32_t curr_qp_y = 26 + pps->pic_init_qp_minus26 + slice->slice_qp_delta;
     int prev_mb_skipped = 0;
     avc_mb_state_t *states = (avc_mb_state_t *)calloc(max_mbs ? max_mbs : 1u, sizeof(*states));
@@ -2787,12 +2459,13 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
         avc_mb_pred_event_t pred_event;
         avc_mb_pred_event_t *pred_for_state = NULL;
 
+        summary->next_mb_address = mb_addr;
         event = (avc_macroblock_event_t){0};
         pred_event = (avc_mb_pred_event_t){0};
         event.address = mb_addr;
         event.entropy = AVC_MB_ENTROPY_CAVLC;
         event.qp_y = curr_qp_y;
-        fill_chroma_qp(&event, pps, sps);
+        avc_mb_fill_chroma_qp(&event, pps, sps);
         neighbor_states4(states, max_mbs, width, mb_addr, &left, &top,
                          &top_right, &top_left);
         curr = state_for(states, max_mbs, mb_addr);
@@ -2813,7 +2486,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                 skipped.skipped = 1;
                 skipped.mb_field_decoding_flag = mb_pair_field_flag(states, max_mbs, skipped.address);
                 skipped.qp_y = curr_qp_y;
-                fill_chroma_qp(&skipped, pps, sps);
+                avc_mb_fill_chroma_qp(&skipped, pps, sps);
                 if (slice->slice_kind == AVC_SLICE_B) {
                     const avc_mb_state_t *skip_left;
                     const avc_mb_state_t *skip_top;
@@ -2849,6 +2522,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                 summary->macroblocks_seen++;
                 event.mb_skip_run--;
                 prev_mb_skipped = 1;
+                summary->next_mb_address = mb_addr;
             }
             if (mb_addr >= max_mbs || !avc_br_more_rbsp_data(br)) {
                 break;
@@ -2876,7 +2550,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
             return 0;
         }
         if (slice->slice_kind == AVC_SLICE_I || slice->slice_kind == AVC_SLICE_SI) {
-            avc_i_mb_type_info_t i_info = classify_i_mb_type(event.mb_type);
+            avc_i_mb_type_info_t i_info = avc_i_mb_type_classify(event.mb_type);
 
             if (i_info.is_pcm) {
                 if (!cavlc_consume_ipcm(br, sps, &event)) {
@@ -2884,7 +2558,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                     return 0;
                 }
                 event.qp_y = curr_qp_y;
-                fill_chroma_qp(&event, pps, sps);
+                avc_mb_fill_chroma_qp(&event, pps, sps);
                 cavlc_mark_ipcm_nonzero(curr, sps);
                 if (callbacks.on_macroblock) {
                     callbacks.on_macroblock(opaque, &event);
@@ -2893,6 +2567,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                 summary->macroblocks_seen++;
                 mb_addr++;
                 prev_mb_skipped = 0;
+                summary->next_mb_address = mb_addr;
                 continue;
             }
             if (i_info.pred_kind == AVC_MB_PRED_UNKNOWN) {
@@ -2920,7 +2595,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                     free(states);
                     return 0;
                 }
-                if (chroma_array_type(sps) == 0) {
+                if (avc_mb_chroma_array_type(sps) == 0) {
                     event.coded_block_pattern_chroma = 0;
                 }
             } else {
@@ -2931,9 +2606,9 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                 i_info.pred_kind == AVC_MB_PRED_INTRA_16X16) {
                 event.mb_qp_delta = avc_br_read_se(br);
             }
-            curr_qp_y = qp_y_from_delta(curr_qp_y, event.mb_qp_delta, sps);
+            curr_qp_y = avc_mb_qp_y_from_delta(curr_qp_y, event.mb_qp_delta, sps);
             event.qp_y = curr_qp_y;
-            fill_chroma_qp(&event, pps, sps);
+            avc_mb_fill_chroma_qp(&event, pps, sps);
             if (callbacks.on_macroblock) {
                 callbacks.on_macroblock(opaque, &event);
             }
@@ -2956,7 +2631,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
             }
             save_mb_state(states, max_mbs, &event, NULL);
         } else if (slice->slice_kind == AVC_SLICE_P || slice->slice_kind == AVC_SLICE_SP) {
-            avc_p_mb_type_info_t p_info = classify_p_mb_type(event.mb_type);
+            avc_p_mb_type_info_t p_info = avc_p_mb_type_classify(event.mb_type);
             avc_i_mb_type_info_t i_info = p_info.intra;
 
             if (p_info.shape == AVC_P_MB_UNKNOWN) {
@@ -2972,7 +2647,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                             return 0;
                         }
                         event.qp_y = curr_qp_y;
-                        fill_chroma_qp(&event, pps, sps);
+                        avc_mb_fill_chroma_qp(&event, pps, sps);
                         cavlc_mark_ipcm_nonzero(curr, sps);
                         if (callbacks.on_macroblock) {
                             callbacks.on_macroblock(opaque, &event);
@@ -2981,6 +2656,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                         summary->macroblocks_seen++;
                         mb_addr++;
                         prev_mb_skipped = 0;
+                        summary->next_mb_address = mb_addr;
                         continue;
                     }
                     note(callbacks, opaque, "unsupported P-slice intra CAVLC macroblock type");
@@ -3026,7 +2702,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                     return 0;
                 }
             }
-            if (chroma_array_type(sps) == 0) {
+            if (avc_mb_chroma_array_type(sps) == 0) {
                 event.coded_block_pattern_chroma = 0;
             }
             if (pps->transform_8x8_mode_flag && event.coded_block_pattern_luma &&
@@ -3037,9 +2713,9 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                 (p_info.shape == AVC_P_MB_INTRA && i_info.pred_kind == AVC_MB_PRED_INTRA_16X16)) {
                 event.mb_qp_delta = avc_br_read_se(br);
             }
-            curr_qp_y = qp_y_from_delta(curr_qp_y, event.mb_qp_delta, sps);
+            curr_qp_y = avc_mb_qp_y_from_delta(curr_qp_y, event.mb_qp_delta, sps);
             event.qp_y = curr_qp_y;
-            fill_chroma_qp(&event, pps, sps);
+            avc_mb_fill_chroma_qp(&event, pps, sps);
             if (callbacks.on_macroblock) {
                 callbacks.on_macroblock(opaque, &event);
             }
@@ -3062,7 +2738,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
             }
             save_mb_state(states, max_mbs, &event, pred_for_state);
         } else if (slice->slice_kind == AVC_SLICE_B) {
-            avc_b_mb_type_info_t b_info = classify_b_mb_type(event.mb_type);
+            avc_b_mb_type_info_t b_info = avc_b_mb_type_classify(event.mb_type);
             avc_i_mb_type_info_t i_info = b_info.intra;
 
             if (b_info.shape == AVC_B_MB_UNKNOWN) {
@@ -3077,7 +2753,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                         return 0;
                     }
                     event.qp_y = curr_qp_y;
-                    fill_chroma_qp(&event, pps, sps);
+                    avc_mb_fill_chroma_qp(&event, pps, sps);
                     cavlc_mark_ipcm_nonzero(curr, sps);
                     if (callbacks.on_macroblock) {
                         callbacks.on_macroblock(opaque, &event);
@@ -3086,6 +2762,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                     summary->macroblocks_seen++;
                     mb_addr++;
                     prev_mb_skipped = 0;
+                    summary->next_mb_address = mb_addr;
                     continue;
                 }
                 if (i_info.pred_kind == AVC_MB_PRED_UNKNOWN) {
@@ -3132,7 +2809,7 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                     return 0;
                 }
             }
-            if (chroma_array_type(sps) == 0) {
+            if (avc_mb_chroma_array_type(sps) == 0) {
                 event.coded_block_pattern_chroma = 0;
             }
             if (pps->transform_8x8_mode_flag && event.coded_block_pattern_luma &&
@@ -3143,9 +2820,9 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
                 (b_info.shape == AVC_B_MB_INTRA && i_info.pred_kind == AVC_MB_PRED_INTRA_16X16)) {
                 event.mb_qp_delta = avc_br_read_se(br);
             }
-            curr_qp_y = qp_y_from_delta(curr_qp_y, event.mb_qp_delta, sps);
+            curr_qp_y = avc_mb_qp_y_from_delta(curr_qp_y, event.mb_qp_delta, sps);
             event.qp_y = curr_qp_y;
-            fill_chroma_qp(&event, pps, sps);
+            avc_mb_fill_chroma_qp(&event, pps, sps);
             if (callbacks.on_macroblock) {
                 callbacks.on_macroblock(opaque, &event);
             }
@@ -3170,9 +2847,12 @@ static int parse_cavlc_slice_data(avc_bitreader_t *br,
         }
         mb_addr++;
         prev_mb_skipped = 0;
+        summary->next_mb_address = mb_addr;
     }
 
-    summary->complete = mb_addr >= max_mbs;
+    summary->next_mb_address = mb_addr;
+    summary->picture_complete = mb_addr >= max_mbs;
+    summary->complete = !br->error;
     free(states);
     return !br->error;
 }
@@ -3190,8 +2870,8 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
     unsigned slice_qp_y;
     int32_t curr_qp_y;
     uint32_t mb_addr = slice->first_mb_in_slice;
-    uint32_t max_mbs = pic_size_in_mbs(sps);
-    uint32_t width = pic_width_in_mbs(sps);
+    uint32_t max_mbs = avc_mb_pic_size_in_mbs(sps);
+    uint32_t width = avc_mb_pic_width_in_mbs(sps);
     int prev_mb_qp_delta_nonzero = 0;
     int prev_mb_skipped = 0;
     avc_mb_state_t *states = (avc_mb_state_t *)calloc(max_mbs ? max_mbs : 1u, sizeof(*states));
@@ -3205,6 +2885,8 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
     }
     byte_pos = br->bit_pos >> 3;
     if (byte_pos >= br->size) {
+        summary->next_mb_address = mb_addr;
+        summary->picture_complete = mb_addr >= max_mbs;
         free(states);
         return !br->error;
     }
@@ -3231,11 +2913,12 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
         avc_mb_pred_event_t *pred_for_state = NULL;
         int skipped = 0;
 
+        summary->next_mb_address = mb_addr;
         event = (avc_macroblock_event_t){0};
         event.address = mb_addr;
         event.entropy = AVC_MB_ENTROPY_CABAC;
         event.qp_y = curr_qp_y;
-        fill_chroma_qp(&event, pps, sps);
+        avc_mb_fill_chroma_qp(&event, pps, sps);
         i_info = (avc_i_mb_type_info_t){0};
         p_info = (avc_p_mb_type_info_t){0};
         b_info = (avc_b_mb_type_info_t){0};
@@ -3248,7 +2931,13 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
             skipped = avc_cabac_decode_mb_skip_flag(&cabac, slice->slice_kind,
                                                     left && left->available, left ? left->skipped : 0,
                                                     top && top->available, top ? top->skipped : 0);
+            debug_mb(callbacks, opaque, mb_addr,
+                     "CABAC debug mb=%u after mb_skip_flag skipped=%d bit=%zu range=%u offset=%u",
+                     mb_addr, skipped, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
             if (cabac.error) {
+                summary->next_mb_address = mb_addr;
+                notef(callbacks, opaque, "CABAC mb_skip_flag decode failed mb=%u bit=%zu",
+                      mb_addr, cabac.bit_pos);
                 free(states);
                 return 0;
             }
@@ -3259,7 +2948,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 event.skipped = 1;
                 event.mb_field_decoding_flag = mb_pair_field_flag(states, max_mbs, mb_addr);
                 event.qp_y = curr_qp_y;
-                fill_chroma_qp(&event, pps, sps);
+                avc_mb_fill_chroma_qp(&event, pps, sps);
                 if (slice->slice_kind == AVC_SLICE_B) {
                     emit_b_direct_pred(mb_addr, slice, left, top, top_right, top_left,
                                        callbacks, opaque, &skipped_pred);
@@ -3275,12 +2964,26 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 save_mb_state(states, max_mbs, &event, skipped_pred_ptr);
                 summary->macroblocks_seen++;
                 mb_addr++;
+                summary->next_mb_address = mb_addr;
                 prev_mb_qp_delta_nonzero = 0;
                 prev_mb_skipped = 1;
-                if (avc_cabac_decode_terminate(&cabac)) {
-                    summary->complete = 1;
-                    free(states);
-                    return !cabac.error;
+                {
+                    int end_of_slice = avc_cabac_decode_terminate(&cabac);
+                    if (cabac.error) {
+                        summary->next_mb_address = mb_addr;
+                        notef(callbacks, opaque,
+                              "CABAC end_of_slice_flag decode failed after skipped mb=%u bit=%zu",
+                              mb_addr - 1u, cabac.bit_pos);
+                        free(states);
+                        return 0;
+                    }
+                    if (end_of_slice) {
+                        summary->next_mb_address = mb_addr;
+                        summary->picture_complete = mb_addr >= max_mbs;
+                        summary->complete = 1;
+                        free(states);
+                        return !cabac.error;
+                    }
                 }
                 continue;
             }
@@ -3293,7 +2996,13 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                                                         left ? left->mb_field_decoding_flag : 0,
                                                         top && top->available,
                                                         top ? top->mb_field_decoding_flag : 0);
+            debug_mb(callbacks, opaque, mb_addr,
+                     "CABAC debug mb=%u after mb_field_decoding_flag=%d bit=%zu",
+                     mb_addr, event.mb_field_decoding_flag, cabac.bit_pos);
             if (cabac.error) {
+                notef(callbacks, opaque,
+                      "CABAC mb_field_decoding_flag decode failed mb=%u bit=%zu",
+                      mb_addr, cabac.bit_pos);
                 free(states);
                 return 0;
             }
@@ -3309,15 +3018,24 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
-            i_info = classify_i_mb_type(event.mb_type);
+            i_info = avc_i_mb_type_classify(event.mb_type);
         } else if (slice->slice_kind == AVC_SLICE_B) {
-            if (!avc_cabac_decode_mb_type_b(&cabac, &event.mb_type)) {
+            if (!avc_cabac_decode_mb_type_b(&cabac,
+                                            left && left->available,
+                                            state_is_b_direct(left),
+                                            top && top->available,
+                                            state_is_b_direct(top),
+                                            &event.mb_type)) {
                 notef(callbacks, opaque, "CABAC mb_type B decode failed mb=%u bit=%zu",
                       mb_addr, cabac.bit_pos);
                 free(states);
                 return 0;
             }
-            b_info = classify_b_mb_type(event.mb_type);
+            debug_mb(callbacks, opaque, mb_addr,
+                     "CABAC debug mb=%u after mb_type=%u bit=%zu range=%u offset=%u",
+                     mb_addr, event.mb_type, cabac.bit_pos,
+                     cabac.cod_i_range, cabac.cod_i_offset);
+            b_info = avc_b_mb_type_classify(event.mb_type);
             if (b_info.shape == AVC_B_MB_UNKNOWN) {
                 notef(callbacks, opaque,
                       "unsupported B-slice CABAC macroblock type mb=%u mb_type=%u bit=%zu",
@@ -3335,7 +3053,11 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
-            p_info = classify_p_mb_type(event.mb_type);
+            debug_mb(callbacks, opaque, mb_addr,
+                     "CABAC debug mb=%u after P mb_type=%u bit=%zu range=%u offset=%u",
+                     mb_addr, event.mb_type, cabac.bit_pos,
+                     cabac.cod_i_range, cabac.cod_i_offset);
+            p_info = avc_p_mb_type_classify(event.mb_type);
             if (p_info.shape == AVC_P_MB_UNKNOWN) {
                 notef(callbacks, opaque,
                       "unsupported P-slice CABAC macroblock type mb=%u mb_type=%u bit=%zu",
@@ -3349,22 +3071,41 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
         }
 
         if (i_info.is_pcm) {
+            unsigned pcm_bit_pos = 0;
+            unsigned backup_bytes = 0;
+
             event.transform_size_8x8_flag = 0;
-            if (!cabac_consume_ipcm(&cabac, sps, &event)) {
+            if (!cabac_consume_ipcm(&cabac, sps, &event,
+                                    &pcm_bit_pos,
+                                    &backup_bytes)) {
+                notef(callbacks, opaque,
+                      "CABAC I_PCM payload decode failed mb=%u mb_type=%u bit=%zu pcm_bit_pos=%u cabac_backup_bytes=%u",
+                      mb_addr, event.mb_type, cabac.bit_pos,
+                      pcm_bit_pos, backup_bytes);
                 free(states);
                 return 0;
             }
             event.qp_y = curr_qp_y;
-            fill_chroma_qp(&event, pps, sps);
+            avc_mb_fill_chroma_qp(&event, pps, sps);
             if (callbacks.on_macroblock) {
                 callbacks.on_macroblock(opaque, &event);
             }
             save_mb_state(states, max_mbs, &event, NULL);
             summary->macroblocks_seen++;
             mb_addr++;
+            summary->next_mb_address = mb_addr;
             prev_mb_qp_delta_nonzero = 0;
             prev_mb_skipped = 0;
             if (mb_addr >= max_mbs || avc_cabac_decode_terminate(&cabac)) {
+                if (cabac.error) {
+                    notef(callbacks, opaque,
+                          "CABAC end_of_slice_flag decode failed after I_PCM mb=%u bit=%zu",
+                          mb_addr - 1u, cabac.bit_pos);
+                    free(states);
+                    return 0;
+                }
+                summary->next_mb_address = mb_addr;
+                summary->picture_complete = mb_addr >= max_mbs;
                 summary->complete = 1;
                 free(states);
                 return !cabac.error;
@@ -3511,6 +3252,9 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
+            debug_mb(callbacks, opaque, mb_addr,
+                     "CABAC debug mb=%u after B mb_pred bit=%zu range=%u offset=%u",
+                     mb_addr, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
             pred_for_state = &pred_event;
             if (!avc_cabac_decode_coded_block_pattern_luma(&cabac,
                                                            left && left->available,
@@ -3524,6 +3268,10 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
+            debug_mb(callbacks, opaque, mb_addr,
+                     "CABAC debug mb=%u after cbp_luma=%u bit=%zu range=%u offset=%u",
+                     mb_addr, event.coded_block_pattern_luma, cabac.bit_pos,
+                     cabac.cod_i_range, cabac.cod_i_offset);
             if (!avc_cabac_decode_coded_block_pattern_chroma(&cabac,
                                                              left && left->available,
                                                              left ? left->coded_block_pattern_chroma : 0,
@@ -3536,11 +3284,18 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
+            debug_mb(callbacks, opaque, mb_addr,
+                     "CABAC debug mb=%u after cbp_chroma=%u bit=%zu range=%u offset=%u",
+                     mb_addr, event.coded_block_pattern_chroma, cabac.bit_pos,
+                     cabac.cod_i_range, cabac.cod_i_offset);
             if (pps->transform_8x8_mode_flag && event.coded_block_pattern_luma) {
                 event.transform_size_8x8_flag =
                     avc_cabac_decode_transform_size_8x8_flag(&cabac,
                                                              left ? left->transform_size_8x8_flag : 0,
                                                              top ? top->transform_size_8x8_flag : 0);
+                debug_mb(callbacks, opaque, mb_addr,
+                         "CABAC debug mb=%u after transform_8x8=%d bit=%zu",
+                         mb_addr, event.transform_size_8x8_flag, cabac.bit_pos);
                 if (cabac.error) {
                     notef(callbacks, opaque,
                           "CABAC transform_size_8x8_flag decode failed mb=%u bit=%zu",
@@ -3558,12 +3313,16 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                     free(states);
                     return 0;
                 }
+                debug_mb(callbacks, opaque, mb_addr,
+                         "CABAC debug mb=%u after mb_qp_delta=%d bit=%zu range=%u offset=%u",
+                         mb_addr, event.mb_qp_delta, cabac.bit_pos,
+                         cabac.cod_i_range, cabac.cod_i_offset);
             }
         }
 
-        curr_qp_y = qp_y_from_delta(curr_qp_y, event.mb_qp_delta, sps);
+        curr_qp_y = avc_mb_qp_y_from_delta(curr_qp_y, event.mb_qp_delta, sps);
         event.qp_y = curr_qp_y;
-        fill_chroma_qp(&event, pps, sps);
+        avc_mb_fill_chroma_qp(&event, pps, sps);
         if (callbacks.on_macroblock) {
             callbacks.on_macroblock(opaque, &event);
         }
@@ -3606,18 +3365,30 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                                            residual_scan_mode(slice, sps, &event),
                                            left, top, curr,
                                            callbacks, opaque)) {
+                notef(callbacks, opaque,
+                      "CABAC luma residual decode failed mb=%u bit=%zu",
+                      mb_addr, cabac.bit_pos);
                 free(states);
                 return 0;
             }
+            debug_mb(callbacks, opaque, mb_addr,
+                     "CABAC debug mb=%u after luma residuals bit=%zu range=%u offset=%u",
+                     mb_addr, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
             if (!cabac_emit_chroma_residuals(&cabac, mb_addr, pps, sps, &event,
                                              AVC_MB_PRED_INTER,
                                              event.coded_block_pattern_chroma,
                                              residual_scan_mode(slice, sps, &event),
                                              left, top, curr,
                                              callbacks, opaque)) {
+                notef(callbacks, opaque,
+                      "CABAC chroma residual decode failed mb=%u bit=%zu",
+                      mb_addr, cabac.bit_pos);
                 free(states);
                 return 0;
             }
+            debug_mb(callbacks, opaque, mb_addr,
+                     "CABAC debug mb=%u after chroma residuals bit=%zu range=%u offset=%u",
+                     mb_addr, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
         } else if (b_info.shape == AVC_B_MB_DIRECT ||
                    b_info.shape == AVC_B_MB_INTER ||
                    b_info.shape == AVC_B_MB_8X8) {
@@ -3649,16 +3420,43 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
         }
 
         mb_addr++;
+        summary->next_mb_address = mb_addr;
         prev_mb_qp_delta_nonzero = event.mb_qp_delta != 0;
         prev_mb_skipped = 0;
-        if (mb_addr >= max_mbs || avc_cabac_decode_terminate(&cabac)) {
+        if (mb_addr >= max_mbs) {
+            summary->next_mb_address = mb_addr;
+            summary->picture_complete = mb_addr >= max_mbs;
             summary->complete = 1;
             free(states);
-            return !cabac.error;
+            return 1;
+        }
+        {
+            int end_of_slice = avc_cabac_decode_terminate(&cabac);
+            if (cabac.error) {
+                notef(callbacks, opaque,
+                      "CABAC end_of_slice_flag decode failed after mb=%u bit=%zu",
+                      mb_addr - 1u, cabac.bit_pos);
+                free(states);
+                return 0;
+            }
+            if (end_of_slice) {
+                summary->next_mb_address = mb_addr;
+                summary->picture_complete = 0;
+                summary->complete = 1;
+                free(states);
+                return 1;
+            }
         }
     }
 
-    summary->complete = mb_addr >= max_mbs;
+    summary->next_mb_address = mb_addr;
+    summary->picture_complete = mb_addr >= max_mbs;
+    summary->complete = mb_addr >= max_mbs && !cabac.error;
+    if (cabac.error) {
+        notef(callbacks, opaque,
+              "CABAC decoder stopped before mb=%u bit=%zu after parsed_mbs=%u",
+              mb_addr, cabac.bit_pos, summary->macroblocks_seen);
+    }
     free(states);
     return !cabac.error;
 }
@@ -3688,7 +3486,9 @@ int avc_parse_slice_data(const uint8_t *rbsp, size_t rbsp_size,
     }
 
     summary->entropy_coding_mode_flag = pps->entropy_coding_mode_flag;
-    summary->max_macroblocks = pic_size_in_mbs(sps);
+    summary->first_mb_in_slice = slice->first_mb_in_slice;
+    summary->next_mb_address = slice->first_mb_in_slice;
+    summary->max_macroblocks = avc_mb_pic_size_in_mbs(sps);
 
     avc_br_init(&br, rbsp, rbsp_size);
     if (slice->header_bits > rbsp_size * 8) {

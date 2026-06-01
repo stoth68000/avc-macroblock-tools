@@ -31,6 +31,7 @@ struct avc_parser {
     avc_dpb_t dpb;
     uint8_t active_sps_id;
     uint8_t active_sps_valid;
+    uint32_t slice_notes_seen;
     avc_parser_callbacks_t callbacks;
     void *opaque;
 };

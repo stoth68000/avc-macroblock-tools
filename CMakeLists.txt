@@ -13,6 +13,8 @@ add_library(avcprobe
     src/avc_dpb.c
     src/avc_cabac.c
     src/avc_cavlc.c
+    src/avc_macroblock_layout.c
+    src/avc_macroblock_types.c
     src/avc_macroblock.c
     src/avc_parser.c
 )
