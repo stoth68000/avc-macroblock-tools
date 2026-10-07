@@ -367,7 +367,7 @@ int main(void)
         assert(cabac.ctx[14].state == 29);
         assert(cabac.ctx[14].mps == 0);
         avc_cabac_set_context(&cabac, 231, 63, 0);
-        assert(avc_cabac_decode_coeff_abs_level_minus1_stateful(&cabac, 227, 2, 0, &value));
+        assert(avc_cabac_decode_coeff_abs_level_minus1_stateful(&cabac, 227, 0, 2, 0, &value));
         assert(value < 128);
     }
 
@@ -398,7 +398,7 @@ int main(void)
         avc_cabac_init(&cabac, data, sizeof(data));
         assert(!cabac.error);
         assert(avc_cabac_init_contexts(&cabac, 26, 0, 0));
-        assert(avc_cabac_decode_residual_block(&cabac, 16, 85, 105, 166, 227, 1, 1, &block));
+        assert(avc_cabac_decode_residual_block(&cabac, 16, 0, 1, 85, 105, 166, 227, 1, 1, 0, &block));
         assert(block.max_coeff == 16);
         assert(block.total_coeff <= 16);
         assert(!cabac.error);

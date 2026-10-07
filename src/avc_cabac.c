@@ -1756,28 +1756,101 @@ int avc_cabac_decode_coded_block_flag(avc_cabac_decoder_t *cabac,
     return avc_cabac_decode_decision(cabac, ctx_base + ctx_inc);
 }
 
-int avc_cabac_decode_significant_coeff_flag(avc_cabac_decoder_t *cabac,
-                                            unsigned ctx_base, unsigned scan_index)
+static unsigned residual_ctx_idx_inc(unsigned ctx_block_cat,
+                                     unsigned scan_index,
+                                     unsigned max_coeff,
+                                     int field_scan,
+                                     int last_significant)
 {
-    if (scan_index > 63 || ctx_base + scan_index >= AVC_CABAC_CONTEXTS) {
+    static const unsigned sig_8x8_frame[63] = {
+        0, 1, 2, 3, 4, 5, 5, 4, 4, 3, 3, 4, 4, 4, 5, 5,
+        4, 4, 4, 4, 3, 3, 6, 7, 7, 7, 8, 9, 10, 9, 8, 7,
+        7, 6, 11, 12, 13, 11, 6, 7, 8, 9, 14, 10, 9, 8, 6, 11,
+        12, 13, 11, 6, 9, 14, 10, 9, 11, 12, 13, 11, 14, 10, 12
+    };
+    static const unsigned sig_8x8_field[63] = {
+        0, 1, 1, 2, 2, 3, 3, 4, 5, 6, 7, 7, 7, 8, 4, 5,
+        6, 9, 10, 10, 8, 11, 12, 11, 9, 9, 10, 10, 8, 11, 12, 11,
+        9, 9, 10, 10, 8, 11, 12, 11, 9, 9, 10, 10, 8, 13, 13, 9,
+        9, 10, 10, 8, 13, 13, 9, 9, 10, 10, 14, 14, 14, 14, 14
+    };
+    static const unsigned last_8x8[63] = {
+        0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+        3, 3, 3, 3, 3, 3, 3, 3,
+        4, 4, 4, 4, 4, 4, 4, 4,
+        5, 5, 5, 5,
+        6, 6, 6, 6,
+        7, 7, 7, 7,
+        8, 8, 8
+    };
+
+    if (ctx_block_cat == 3) {
+        unsigned num_c8x8 = max_coeff / 4u;
+        unsigned inc;
+        if (num_c8x8 == 0) {
+            num_c8x8 = 1;
+        }
+        inc = scan_index / num_c8x8;
+        return inc > 2u ? 2u : inc;
+    }
+    if (ctx_block_cat == 5 || ctx_block_cat == 9 || ctx_block_cat == 13) {
+        if (scan_index >= 63u) {
+            return 0;
+        }
+        if (last_significant) {
+            return last_8x8[scan_index];
+        }
+        return field_scan ? sig_8x8_field[scan_index] : sig_8x8_frame[scan_index];
+    }
+    return scan_index;
+}
+
+int avc_cabac_decode_significant_coeff_flag(avc_cabac_decoder_t *cabac,
+                                            unsigned ctx_base,
+                                            unsigned ctx_block_cat,
+                                            unsigned scan_index,
+                                            unsigned max_coeff,
+                                            int field_scan)
+{
+    unsigned ctx_inc;
+
+    if (scan_index > 63) {
         cabac->error = 1;
         return 0;
     }
-    return avc_cabac_decode_decision(cabac, ctx_base + scan_index);
+    ctx_inc = residual_ctx_idx_inc(ctx_block_cat, scan_index, max_coeff, field_scan, 0);
+    if (ctx_base + ctx_inc >= AVC_CABAC_CONTEXTS) {
+        cabac->error = 1;
+        return 0;
+    }
+    return avc_cabac_decode_decision(cabac, ctx_base + ctx_inc);
 }
 
 int avc_cabac_decode_last_significant_coeff_flag(avc_cabac_decoder_t *cabac,
-                                                 unsigned ctx_base, unsigned scan_index)
+                                                 unsigned ctx_base,
+                                                 unsigned ctx_block_cat,
+                                                 unsigned scan_index,
+                                                 unsigned max_coeff,
+                                                 int field_scan)
 {
-    if (scan_index > 63 || ctx_base + scan_index >= AVC_CABAC_CONTEXTS) {
+    unsigned ctx_inc;
+
+    if (scan_index > 63) {
         cabac->error = 1;
         return 0;
     }
-    return avc_cabac_decode_decision(cabac, ctx_base + scan_index);
+    ctx_inc = residual_ctx_idx_inc(ctx_block_cat, scan_index, max_coeff, field_scan, 1);
+    if (ctx_base + ctx_inc >= AVC_CABAC_CONTEXTS) {
+        cabac->error = 1;
+        return 0;
+    }
+    return avc_cabac_decode_decision(cabac, ctx_base + ctx_inc);
 }
 
 int avc_cabac_decode_coeff_abs_level_minus1_stateful(avc_cabac_decoder_t *cabac,
                                                      unsigned ctx_base,
+                                                     unsigned ctx_block_cat,
                                                      unsigned num_abs_level_eq1,
                                                      unsigned num_abs_level_gt1,
                                                      unsigned *value)
@@ -1789,7 +1862,9 @@ int avc_cabac_decode_coeff_abs_level_minus1_stateful(avc_cabac_decoder_t *cabac,
     unsigned rest_ctx_inc;
 
     first_ctx_inc = num_abs_level_gt1 ? 0u : 1u + (num_abs_level_eq1 > 3u ? 3u : num_abs_level_eq1);
-    rest_ctx_inc = 5u + (num_abs_level_gt1 > 4u ? 4u : num_abs_level_gt1);
+    rest_ctx_inc = ctx_block_cat == 3 ?
+        5u + (num_abs_level_gt1 > 3u ? 3u : num_abs_level_gt1) :
+        5u + (num_abs_level_gt1 > 4u ? 4u : num_abs_level_gt1);
 
     if (ctx_base + rest_ctx_inc >= AVC_CABAC_CONTEXTS) {
         cabac->error = 1;
@@ -1834,17 +1909,20 @@ int avc_cabac_decode_coeff_abs_level_minus1_stateful(avc_cabac_decoder_t *cabac,
 int avc_cabac_decode_coeff_abs_level_minus1(avc_cabac_decoder_t *cabac,
                                             unsigned ctx_base, unsigned *value)
 {
-    return avc_cabac_decode_coeff_abs_level_minus1_stateful(cabac, ctx_base, 0, 0, value);
+    return avc_cabac_decode_coeff_abs_level_minus1_stateful(cabac, ctx_base, 0, 0, 0, value);
 }
 
 int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
                                     unsigned max_coeff,
+                                    unsigned ctx_block_cat,
+                                    int coded_block_flag_present,
                                     unsigned coded_ctx_base,
                                     unsigned sig_ctx_base,
                                     unsigned last_ctx_base,
                                     unsigned level_ctx_base,
                                     int left_coded,
                                     int top_coded,
+                                    int field_scan,
                                     avc_cabac_residual_block_t *block)
 {
     unsigned i;
@@ -1859,21 +1937,29 @@ int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
     memset(block, 0, sizeof(*block));
     block->max_coeff = max_coeff;
 
-    if (!avc_cabac_decode_coded_block_flag(cabac, coded_ctx_base, left_coded, top_coded)) {
-        if (cabac->error) {
-            return 0;
+    if (coded_block_flag_present) {
+        if (!avc_cabac_decode_coded_block_flag(cabac, coded_ctx_base, left_coded, top_coded)) {
+            if (cabac->error) {
+                return 0;
+            }
+            return 1;
         }
-        return 1;
     }
 
     for (i = 0; i < max_coeff; i++) {
-        int significant = avc_cabac_decode_significant_coeff_flag(cabac, sig_ctx_base, i);
+        int significant = avc_cabac_decode_significant_coeff_flag(cabac, sig_ctx_base,
+                                                                  ctx_block_cat, i,
+                                                                  max_coeff,
+                                                                  field_scan);
         if (cabac->error) {
             return 0;
         }
         block->significant[i] = (uint8_t)significant;
         if (significant) {
-            int last = avc_cabac_decode_last_significant_coeff_flag(cabac, last_ctx_base, i);
+            int last = avc_cabac_decode_last_significant_coeff_flag(cabac, last_ctx_base,
+                                                                    ctx_block_cat, i,
+                                                                    max_coeff,
+                                                                    field_scan);
             if (cabac->error) {
                 return 0;
             }
@@ -1901,6 +1987,7 @@ int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
             return 0;
         }
         if (!avc_cabac_decode_coeff_abs_level_minus1_stateful(cabac, level_ctx_base,
+                                                              ctx_block_cat,
                                                               num_abs_level_eq1,
                                                               num_abs_level_gt1,
                                                               &abs_minus1)) {

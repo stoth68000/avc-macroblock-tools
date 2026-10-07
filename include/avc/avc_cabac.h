@@ -92,24 +92,36 @@ int avc_cabac_decode_coded_block_flag(avc_cabac_decoder_t *cabac,
                                       int left_coded,
                                       int top_coded);
 int avc_cabac_decode_significant_coeff_flag(avc_cabac_decoder_t *cabac,
-                                            unsigned ctx_base, unsigned scan_index);
+                                            unsigned ctx_base,
+                                            unsigned ctx_block_cat,
+                                            unsigned scan_index,
+                                            unsigned max_coeff,
+                                            int field_scan);
 int avc_cabac_decode_last_significant_coeff_flag(avc_cabac_decoder_t *cabac,
-                                                 unsigned ctx_base, unsigned scan_index);
+                                                 unsigned ctx_base,
+                                                 unsigned ctx_block_cat,
+                                                 unsigned scan_index,
+                                                 unsigned max_coeff,
+                                                 int field_scan);
 int avc_cabac_decode_coeff_abs_level_minus1(avc_cabac_decoder_t *cabac,
                                             unsigned ctx_base, unsigned *value);
 int avc_cabac_decode_coeff_abs_level_minus1_stateful(avc_cabac_decoder_t *cabac,
                                                      unsigned ctx_base,
+                                                     unsigned ctx_block_cat,
                                                      unsigned num_abs_level_eq1,
                                                      unsigned num_abs_level_gt1,
                                                      unsigned *value);
 int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
                                     unsigned max_coeff,
+                                    unsigned ctx_block_cat,
+                                    int coded_block_flag_present,
                                     unsigned coded_ctx_base,
                                     unsigned sig_ctx_base,
                                     unsigned last_ctx_base,
                                     unsigned level_ctx_base,
                                     int left_coded,
                                     int top_coded,
+                                    int field_scan,
                                     avc_cabac_residual_block_t *block);
 
 #endif
