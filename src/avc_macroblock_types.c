@@ -181,6 +181,26 @@ void avc_mb_predict_mv(unsigned partition,
     }
 }
 
+void avc_mb_derive_p_skip_mv(avc_mv_predictor_candidate_t a,
+                             avc_mv_predictor_candidate_t b,
+                             avc_mv_predictor_candidate_t c,
+                             int16_t mv[2])
+{
+    if (!mv) {
+        return;
+    }
+
+    mv[0] = 0;
+    mv[1] = 0;
+    if (!a.available || !b.available ||
+        (a.mv[0] == 0 && a.mv[1] == 0) ||
+        (b.mv[0] == 0 && b.mv[1] == 0)) {
+        return;
+    }
+
+    avc_mb_predict_mv(0, 16, 16, a, b, c, mv);
+}
+
 avc_i_mb_type_info_t avc_i_mb_type_classify(uint32_t mb_type)
 {
     avc_i_mb_type_info_t info;

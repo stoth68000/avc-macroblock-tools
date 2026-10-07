@@ -1702,20 +1702,27 @@ static void emit_p_skip_pred(uint32_t mb_addr,
     {
         int16_t mv_a[2] = {0, 0};
         int16_t mv_b[2] = {0, 0};
-        int have_a = neighbor_mv_l0(left, 0, 0, mv_a);
-        int have_b = neighbor_mv_l0(top, 0, 0, mv_b);
+        int16_t mv_c[2] = {0, 0};
+        avc_mv_predictor_candidate_t a;
+        avc_mv_predictor_candidate_t b;
+        avc_mv_predictor_candidate_t c;
 
-        if (!have_a || !have_b ||
-            (mv_a[0] == 0 && mv_a[1] == 0) ||
-            (mv_b[0] == 0 && mv_b[1] == 0)) {
-            pred.mv_pred_l0[0][0] = 0;
-            pred.mv_pred_l0[0][1] = 0;
-            pred.mv_l0[0][0] = 0;
-            pred.mv_l0[0][1] = 0;
-        } else {
-            derive_partition_mv_l0(&pred, 0, AVC_P_MB_L0_16X16, left, top,
-                                   top_right, top_left);
+        a.available = neighbor_mv_l0(left, 0, 0, mv_a);
+        a.mv[0] = mv_a[0];
+        a.mv[1] = mv_a[1];
+        b.available = neighbor_mv_l0(top, 0, 0, mv_b);
+        b.mv[0] = mv_b[0];
+        b.mv[1] = mv_b[1];
+        c.available = neighbor_mv_l0(top_right, 0, 0, mv_c);
+        if (!c.available) {
+            c.available = neighbor_mv_l0(top_left, 0, 0, mv_c);
         }
+        c.mv[0] = mv_c[0];
+        c.mv[1] = mv_c[1];
+
+        avc_mb_derive_p_skip_mv(a, b, c, pred.mv_pred_l0[0]);
+        pred.mv_l0[0][0] = pred.mv_pred_l0[0][0];
+        pred.mv_l0[0][1] = pred.mv_pred_l0[0][1];
     }
     avc_mb_populate_sub_partition_motion(&pred);
     if (out_pred) {

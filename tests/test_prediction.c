@@ -65,6 +65,18 @@ static void assert_mvp(unsigned partition,
     assert(mv[1] == expected_y);
 }
 
+static void assert_p_skip_mv(avc_mv_predictor_candidate_t a,
+                             avc_mv_predictor_candidate_t b,
+                             avc_mv_predictor_candidate_t c,
+                             int16_t expected_x,
+                             int16_t expected_y)
+{
+    int16_t mv[2] = {-999, -999};
+    avc_mb_derive_p_skip_mv(a, b, c, mv);
+    assert(mv[0] == expected_x);
+    assert(mv[1] == expected_y);
+}
+
 int main(void)
 {
     {
@@ -218,6 +230,33 @@ int main(void)
 
         assert_mvp(1, 16, 8, a, b, c, 20, 8);
         assert_mvp(0, 8, 16, a, b, c, 20, 8);
+    }
+
+    {
+        assert_p_skip_mv(candidate(0, 10, 4),
+                         candidate(1, 20, 8),
+                         candidate(1, 30, 12),
+                         0, 0);
+        assert_p_skip_mv(candidate(1, 10, 4),
+                         candidate(0, 20, 8),
+                         candidate(1, 30, 12),
+                         0, 0);
+        assert_p_skip_mv(candidate(1, 0, 0),
+                         candidate(1, 20, 8),
+                         candidate(1, 30, 12),
+                         0, 0);
+        assert_p_skip_mv(candidate(1, 10, 4),
+                         candidate(1, 0, 0),
+                         candidate(1, 30, 12),
+                         0, 0);
+        assert_p_skip_mv(candidate(1, 10, 30),
+                         candidate(1, 40, 10),
+                         candidate(1, 20, 20),
+                         20, 20);
+        assert_p_skip_mv(candidate(1, 10, 30),
+                         candidate(1, 40, 10),
+                         candidate(0, 20, 20),
+                         10, 10);
     }
 
     return 0;

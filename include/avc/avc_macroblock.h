@@ -179,6 +179,10 @@ void avc_mb_predict_mv(unsigned partition,
                        avc_mv_predictor_candidate_t b,
                        avc_mv_predictor_candidate_t c,
                        int16_t mv_pred[2]);
+void avc_mb_derive_p_skip_mv(avc_mv_predictor_candidate_t a,
+                             avc_mv_predictor_candidate_t b,
+                             avc_mv_predictor_candidate_t c,
+                             int16_t mv[2]);
 int avc_parse_slice_data(const uint8_t *rbsp, size_t rbsp_size,
                          const avc_slice_header_t *slice,
                          const avc_parameter_sets_t *sets,
