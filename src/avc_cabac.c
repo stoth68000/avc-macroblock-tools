@@ -1177,6 +1177,16 @@ int avc_cabac_decode_terminate(avc_cabac_decoder_t *cabac)
     return 0;
 }
 
+void avc_cabac_continue_after_nonterminal_terminate(avc_cabac_decoder_t *cabac)
+{
+    if (!cabac || cabac->cod_i_offset < cabac->cod_i_range) {
+        return;
+    }
+    cabac->cod_i_offset -= cabac->cod_i_range;
+    cabac->cod_i_range = 2;
+    cabac_renorm(cabac);
+}
+
 int avc_cabac_decode_decision(avc_cabac_decoder_t *cabac, unsigned ctx_idx)
 {
     avc_cabac_context_t *ctx;

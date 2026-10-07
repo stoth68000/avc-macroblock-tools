@@ -3333,12 +3333,18 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                         free(states);
                         return 0;
                     }
-                    if (end_of_slice && !cabac_has_substantial_bits_left(&cabac)) {
-                        summary->next_mb_address = mb_addr;
-                        summary->picture_complete = mb_addr >= max_mbs;
-                        summary->complete = 1;
-                        free(states);
-                        return !cabac.error;
+                    if (end_of_slice) {
+                        if (!cabac_has_substantial_bits_left(&cabac)) {
+                            summary->next_mb_address = mb_addr;
+                            summary->picture_complete = mb_addr >= max_mbs;
+                            summary->complete = 1;
+                            free(states);
+                            return !cabac.error;
+                        }
+                        trace_mb(callbacks, opaque, mb_addr - 1u,
+                                 "CABAC trace mb=%u nonterminal end_of_slice_flag=1 bit=%zu range=%u offset=%u",
+                                 mb_addr - 1u, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+                        avc_cabac_continue_after_nonterminal_terminate(&cabac);
                     }
                 }
                 continue;
@@ -3473,6 +3479,11 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 summary->complete = 1;
                 free(states);
                 return !cabac.error;
+            }
+            if (end_of_slice &&
+                (slice->slice_kind == AVC_SLICE_P || slice->slice_kind == AVC_SLICE_SP ||
+                 slice->slice_kind == AVC_SLICE_B)) {
+                avc_cabac_continue_after_nonterminal_terminate(&cabac);
             }
             continue;
         }
@@ -3863,12 +3874,21 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
-            if (end_of_slice && !cabac_has_substantial_bits_left(&cabac)) {
-                summary->next_mb_address = mb_addr;
-                summary->picture_complete = 0;
-                summary->complete = 1;
-                free(states);
-                return 1;
+            if (end_of_slice) {
+                if (!cabac_has_substantial_bits_left(&cabac)) {
+                    summary->next_mb_address = mb_addr;
+                    summary->picture_complete = 0;
+                    summary->complete = 1;
+                    free(states);
+                    return 1;
+                }
+                if (slice->slice_kind == AVC_SLICE_P || slice->slice_kind == AVC_SLICE_SP ||
+                    slice->slice_kind == AVC_SLICE_B) {
+                    trace_mb(callbacks, opaque, mb_addr - 1u,
+                             "CABAC trace mb=%u nonterminal end_of_slice_flag=1 bit=%zu range=%u offset=%u",
+                             mb_addr - 1u, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+                    avc_cabac_continue_after_nonterminal_terminate(&cabac);
+                }
             }
         }
     }

@@ -50,6 +50,7 @@ int avc_cabac_init_contexts(avc_cabac_decoder_t *cabac, unsigned slice_qp_y,
                             unsigned cabac_init_idc, unsigned slice_type);
 int avc_cabac_decode_bypass(avc_cabac_decoder_t *cabac);
 int avc_cabac_decode_terminate(avc_cabac_decoder_t *cabac);
+void avc_cabac_continue_after_nonterminal_terminate(avc_cabac_decoder_t *cabac);
 int avc_cabac_decode_decision(avc_cabac_decoder_t *cabac, unsigned ctx_idx);
 void avc_cabac_byte_align(avc_cabac_decoder_t *cabac);
 uint32_t avc_cabac_read_pcm_bits(avc_cabac_decoder_t *cabac, unsigned n);
