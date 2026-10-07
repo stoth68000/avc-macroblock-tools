@@ -46,6 +46,21 @@ typedef struct {
     unsigned expected;
 } run_before_case_t;
 
+typedef struct {
+    const char *bits;
+    int nC;
+    unsigned max_coeff;
+    avc_cavlc_scan_t scan_mode;
+    unsigned total_coeff;
+    unsigned trailing_ones;
+    unsigned total_zeros;
+    int level[4];
+    unsigned scan[4];
+    unsigned x[4];
+    unsigned y[4];
+    unsigned run[4];
+} residual_case_t;
+
 static void bw_put_bit(bit_writer_t *bw, unsigned bit)
 {
     assert(bw->bit_pos < sizeof(bw->data) * 8u);
@@ -146,6 +161,49 @@ static void assert_run_before_case(const run_before_case_t *tc)
                 tc->bits, tc->zeros_left, tc->expected, value);
     }
     assert(value == tc->expected);
+}
+
+static void assert_residual_case(const residual_case_t *tc)
+{
+    bit_writer_t bw = {{0}, 0};
+    avc_bitreader_t br;
+    avc_cavlc_block_t block;
+    coeff_trace_t trace = {0};
+    avc_cavlc_callbacks_t callbacks = {0};
+    unsigned i;
+
+    callbacks.on_coeff = record_coeff;
+    bw_put_bits(&bw, tc->bits);
+    avc_br_init(&br, bw.data, sizeof(bw.data));
+    if (!avc_cavlc_read_residual_block(&br, tc->nC, tc->max_coeff, tc->scan_mode,
+                                       &block, callbacks, &trace)) {
+        fprintf(stderr, "residual bits=%s failed\n", tc->bits);
+        assert(0);
+    }
+    assert(block.total_coeff == tc->total_coeff);
+    assert(block.trailing_ones == tc->trailing_ones);
+    if (block.total_zeros != tc->total_zeros) {
+        fprintf(stderr, "residual bits=%s total_zeros expected=%u got=%u\n",
+                tc->bits, tc->total_zeros, block.total_zeros);
+    }
+    assert(block.total_zeros == tc->total_zeros);
+    assert(trace.count == tc->total_coeff);
+
+    for (i = 0; i < tc->total_coeff; i++) {
+        assert(block.coeff_level[i] == tc->level[i]);
+        assert(block.coeff_scan[i] == tc->scan[i]);
+        assert(block.coeff_x[i] == tc->x[i]);
+        if (block.coeff_y[i] != tc->y[i]) {
+            fprintf(stderr, "residual bits=%s coeff[%u] y expected=%u got=%u scan=%u x=%u\n",
+                    tc->bits, i, tc->y[i], block.coeff_y[i], block.coeff_scan[i],
+                    block.coeff_x[i]);
+        }
+        assert(block.coeff_y[i] == tc->y[i]);
+        assert(block.run_before[i] == tc->run[i]);
+        assert(trace.level[i] == tc->level[i]);
+        assert(trace.scan[i] == tc->scan[i]);
+        assert(trace.run[i] == tc->run[i]);
+    }
 }
 
 int main(void)
@@ -522,6 +580,72 @@ int main(void)
         assert(block.coeff_y[0] == 2);
         assert(block.coeff_x[1] == 0);
         assert(block.coeff_y[1] == 1);
+    }
+
+    {
+        const residual_case_t cases[] = {
+            {
+                "0110010101",
+                2,
+                16,
+                AVC_CAVLC_SCAN_FRAME,
+                2,
+                2,
+                2,
+                {1, 1, 0, 0},
+                {3, 1, 0, 0},
+                {0, 1, 0, 0},
+                {2, 0, 0, 0},
+                {1, 1, 0, 0}
+            },
+            {
+                "0110010101",
+                2,
+                16,
+                AVC_CAVLC_SCAN_FIELD,
+                2,
+                2,
+                2,
+                {1, 1, 0, 0},
+                {3, 1, 0, 0},
+                {0, 0, 0, 0},
+                {2, 1, 0, 0},
+                {1, 1, 0, 0}
+            },
+            {
+                "00101010",
+                0,
+                4,
+                AVC_CAVLC_SCAN_FRAME,
+                2,
+                2,
+                1,
+                {1, -1, 0, 0},
+                {2, 0, 0, 0},
+                {0, 0, 0, 0},
+                {1, 0, 0, 0},
+                {1, 0, 0, 0}
+            },
+            {
+                "001010100101101001010",
+                2,
+                16,
+                AVC_CAVLC_SCAN_FRAME,
+                3,
+                1,
+                4,
+                {-1, 2, -2, 0},
+                {6, 4, 2, 0},
+                {3, 1, 0, 0},
+                {0, 1, 1, 0},
+                {1, 1, 2, 0}
+            },
+        };
+        size_t i;
+
+        for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            assert_residual_case(&cases[i]);
+        }
     }
 
     {
