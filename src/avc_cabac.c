@@ -1435,14 +1435,14 @@ unsigned avc_cabac_ctx_coded_block_pattern_luma(unsigned bin_idx,
         left_coded = ((prior_cbp_luma >> (bin_idx - 1u)) & 1u) != 0;
     } else {
         unsigned left_block = bin_idx + 1u;
-        left_coded = left_available ? ((left_cbp_luma >> left_block) & 1u) != 0 : 0;
+        left_coded = left_available ? ((left_cbp_luma >> left_block) & 1u) != 0 : 1;
     }
 
     if (bin_idx >= 2u) {
         top_coded = ((prior_cbp_luma >> (bin_idx - 2u)) & 1u) != 0;
     } else {
         unsigned top_block = bin_idx + 2u;
-        top_coded = top_available ? ((top_cbp_luma >> top_block) & 1u) != 0 : 0;
+        top_coded = top_available ? ((top_cbp_luma >> top_block) & 1u) != 0 : 1;
     }
 
     if (!left_coded) {
@@ -1461,19 +1461,19 @@ unsigned avc_cabac_ctx_coded_block_pattern_chroma(unsigned bin_idx,
     unsigned ctx_inc = 0;
 
     if (bin_idx == 0) {
-        if (!left_available || left_cbp_chroma == 0) {
+        if (left_available && left_cbp_chroma > 0) {
             ctx_inc++;
         }
-        if (!top_available || top_cbp_chroma == 0) {
+        if (top_available && top_cbp_chroma > 0) {
             ctx_inc += 2;
         }
         return ctx_inc;
     }
 
-    if (!left_available || left_cbp_chroma < 2) {
+    if (left_available && left_cbp_chroma == 2) {
         ctx_inc++;
     }
-    if (!top_available || top_cbp_chroma < 2) {
+    if (top_available && top_cbp_chroma == 2) {
         ctx_inc += 2;
     }
     return ctx_inc;
@@ -1825,7 +1825,7 @@ int avc_cabac_decode_rem_intra_pred_mode(avc_cabac_decoder_t *cabac,
      * context around ctxIdx 69 for these bins.
      */
     for (i = 0; i < 3; i++) {
-        value = (value << 1) | (unsigned)avc_cabac_decode_decision(cabac, 69);
+        value |= (unsigned)avc_cabac_decode_decision(cabac, 69) << i;
         if (cabac->error) {
             return 0;
         }
@@ -1835,14 +1835,34 @@ int avc_cabac_decode_rem_intra_pred_mode(avc_cabac_decoder_t *cabac,
 }
 
 int avc_cabac_decode_intra_chroma_pred_mode(avc_cabac_decoder_t *cabac,
+                                            int left_available,
+                                            int left_chroma_pred_mode_nonzero,
+                                            int top_available,
+                                            int top_chroma_pred_mode_nonzero,
                                             unsigned *mode)
 {
-    unsigned value;
+    unsigned ctx_inc = 0;
 
-    if (!decode_unary(cabac, 64, 3, &value)) {
-        return 0;
+    if (left_available && left_chroma_pred_mode_nonzero) {
+        ctx_inc++;
     }
-    *mode = value;
+    if (top_available && top_chroma_pred_mode_nonzero) {
+        ctx_inc++;
+    }
+
+    if (avc_cabac_decode_decision(cabac, 64 + ctx_inc) == 0) {
+        *mode = 0;
+        return !cabac->error;
+    }
+    if (avc_cabac_decode_decision(cabac, 67) == 0) {
+        *mode = 1;
+        return !cabac->error;
+    }
+    if (avc_cabac_decode_decision(cabac, 67) == 0) {
+        *mode = 2;
+        return !cabac->error;
+    }
+    *mode = 3;
     return 1;
 }
 
@@ -1949,17 +1969,20 @@ int avc_cabac_decode_mvd_component(avc_cabac_decoder_t *cabac,
         prefix++;
     }
     if (prefix >= 9) {
-        unsigned k = 0;
+        unsigned k = 3;
+        unsigned suffix_bits;
         while (avc_cabac_decode_bypass(cabac)) {
+            prefix += 1u << k;
             k++;
-            if (k > 20) {
+            if (k > 24) {
                 cabac->error = 1;
                 return 0;
             }
         }
-        while (k > 0) {
-            suffix = (suffix << 1) | (unsigned)avc_cabac_decode_bypass(cabac);
-            k--;
+        suffix_bits = k;
+        while (suffix_bits > 0) {
+            suffix_bits--;
+            suffix += (unsigned)avc_cabac_decode_bypass(cabac) << suffix_bits;
         }
     }
     sign = avc_cabac_decode_bypass(cabac) ? -1 : 1;

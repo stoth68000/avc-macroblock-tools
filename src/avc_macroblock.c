@@ -665,6 +665,19 @@ static int state_is_b_direct(const avc_mb_state_t *state)
            state->pred.direct_flag[0];
 }
 
+static int state_chroma_pred_mode_nonzero(const avc_mb_state_t *state)
+{
+    if (!state || !state->available || !state->has_pred) {
+        return 0;
+    }
+    if (state->pred.kind != AVC_MB_PRED_INTRA_4X4 &&
+        state->pred.kind != AVC_MB_PRED_INTRA_8X8 &&
+        state->pred.kind != AVC_MB_PRED_INTRA_16X16) {
+        return 0;
+    }
+    return state->pred.intra_chroma_pred_mode != 0;
+}
+
 static unsigned luma4x4_index_from_xy(unsigned x, unsigned y)
 {
     return ((y >> 1) * 2u + (x >> 1)) * 4u + ((y & 1u) << 1) + (x & 1u);
@@ -800,12 +813,13 @@ static void store_residual_nonzero(avc_mb_state_t *curr,
         }
         break;
     case AVC_RESIDUAL_LUMA_8X8:
-        if (block_index < 16) {
-            unsigned group = block_index >> 2;
+        if (block_index < 4) {
+            unsigned group = block_index;
             uint8_t count = clipped_nonzero_count(total_coeff);
-            curr->luma_nonzero[block_index] = count;
-            if (group < 4 && count > curr->luma_8x8_nonzero[group]) {
-                curr->luma_8x8_nonzero[group] = count;
+            unsigned sub;
+            curr->luma_8x8_nonzero[group] = count;
+            for (sub = 0; sub < 4; sub++) {
+                curr->luma_nonzero[group * 4u + sub] = count;
             }
         }
         break;
@@ -1728,8 +1742,11 @@ static void derive_direct_partition_geometry(avc_mb_pred_event_t *pred,
 static int cabac_parse_intra_mb_pred(avc_cabac_decoder_t *cabac,
                                      uint32_t mb_addr,
                                      avc_i_mb_type_info_t info,
+                                     const avc_mb_state_t *left,
+                                     const avc_mb_state_t *top,
                                      avc_macroblock_callbacks_t callbacks,
-                                     void *opaque)
+                                     void *opaque,
+                                     avc_mb_pred_event_t *out_pred)
 {
     avc_mb_pred_event_t pred;
     unsigned i;
@@ -1743,6 +1760,10 @@ static int cabac_parse_intra_mb_pred(avc_cabac_decoder_t *cabac,
         for (i = 0; i < blocks; i++) {
             unsigned rem_mode = 0;
             int prev_flag = avc_cabac_decode_prev_intra_pred_mode_flag(cabac);
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u intra_pred block=%u prev_intra_pred_mode_flag ctx=68 value=%d bit=%zu range=%u offset=%u",
+                     mb_addr, i, prev_flag, cabac->bit_pos, cabac->cod_i_range,
+                     cabac->cod_i_offset);
             if (cabac->error) {
                 return 0;
             }
@@ -1751,6 +1772,10 @@ static int cabac_parse_intra_mb_pred(avc_cabac_decoder_t *cabac,
                 if (!avc_cabac_decode_rem_intra_pred_mode(cabac, &rem_mode)) {
                     return 0;
                 }
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u intra_pred block=%u rem_intra_pred_mode value=%u bit=%zu range=%u offset=%u",
+                         mb_addr, i, rem_mode, cabac->bit_pos, cabac->cod_i_range,
+                         cabac->cod_i_offset);
                 pred.rem_intra_pred_mode[i] = (uint8_t)rem_mode;
             }
         }
@@ -1758,13 +1783,30 @@ static int cabac_parse_intra_mb_pred(avc_cabac_decoder_t *cabac,
 
     if (info.pred_kind == AVC_MB_PRED_INTRA_4X4 || info.pred_kind == AVC_MB_PRED_INTRA_8X8 ||
         info.pred_kind == AVC_MB_PRED_INTRA_16X16) {
-        if (!avc_cabac_decode_intra_chroma_pred_mode(cabac, &pred.intra_chroma_pred_mode)) {
+        trace_mb(callbacks, opaque, mb_addr,
+                 "CABAC trace mb=%u enter intra_chroma_pred_mode left_available=%d left_nonzero=%d top_available=%d top_nonzero=%d bit=%zu range=%u offset=%u",
+                 mb_addr, left && left->available, state_chroma_pred_mode_nonzero(left),
+                 top && top->available, state_chroma_pred_mode_nonzero(top),
+                 cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
+        if (!avc_cabac_decode_intra_chroma_pred_mode(cabac,
+                                                     left && left->available,
+                                                     state_chroma_pred_mode_nonzero(left),
+                                                     top && top->available,
+                                                     state_chroma_pred_mode_nonzero(top),
+                                                     &pred.intra_chroma_pred_mode)) {
             return 0;
         }
+        trace_mb(callbacks, opaque, mb_addr,
+                 "CABAC trace mb=%u exit intra_chroma_pred_mode value=%u bit=%zu range=%u offset=%u",
+                 mb_addr, pred.intra_chroma_pred_mode, cabac->bit_pos,
+                 cabac->cod_i_range, cabac->cod_i_offset);
     }
 
     if (callbacks.on_mb_pred) {
         callbacks.on_mb_pred(opaque, &pred);
+    }
+    if (out_pred) {
+        *out_pred = pred;
     }
     return !cabac->error;
 }
@@ -3630,12 +3672,28 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
 
         if (slice->slice_kind == AVC_SLICE_P || slice->slice_kind == AVC_SLICE_SP ||
             slice->slice_kind == AVC_SLICE_B) {
+            const unsigned skip_ctx =
+                (slice->slice_kind == AVC_SLICE_B ? 24u : 11u) +
+                ((left && left->available && !left->skipped) ? 1u : 0u) +
+                ((top && top->available && !top->skipped) ? 1u : 0u);
+            const size_t skip_before_bit = cabac.bit_pos;
+            const uint32_t skip_before_range = cabac.cod_i_range;
+            const uint32_t skip_before_offset = cabac.cod_i_offset;
+            const uint8_t skip_state_before = cabac.ctx[skip_ctx].state;
+            const uint8_t skip_mps_before = cabac.ctx[skip_ctx].mps;
             skipped = avc_cabac_decode_mb_skip_flag(&cabac, slice->slice_kind,
                                                     left && left->available, left ? left->skipped : 0,
                                                     top && top->available, top ? top->skipped : 0);
             trace_mb(callbacks, opaque, mb_addr,
-                     "CABAC trace mb=%u mb_skip_flag=%d bit=%zu range=%u offset=%u",
-                     mb_addr, skipped, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+                     "CABAC trace mb=%u mb_skip_flag ctx=%u state_before=%u mps_before=%u state_after=%u mps_after=%u left_available=%d left_skipped=%d top_available=%d top_skipped=%d value=%d before_bit=%zu before_range=%u before_offset=%u bit=%zu range=%u offset=%u",
+                     mb_addr, skip_ctx,
+                     skip_state_before, skip_mps_before,
+                     cabac.ctx[skip_ctx].state, cabac.ctx[skip_ctx].mps,
+                     left && left->available, left ? left->skipped : 0,
+                     top && top->available, top ? top->skipped : 0,
+                     skipped, skip_before_bit, skip_before_range,
+                     skip_before_offset, cabac.bit_pos,
+                     cabac.cod_i_range, cabac.cod_i_offset);
             debug_mb(callbacks, opaque, mb_addr,
                      "CABAC debug mb=%u after mb_skip_flag skipped=%d bit=%zu range=%u offset=%u",
                      mb_addr, skipped, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
@@ -3899,12 +3957,14 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                          mb_addr, pps->transform_8x8_mode_flag,
                          i_pred_kind_name(i_info.pred_kind));
             }
-            if (!cabac_parse_intra_mb_pred(&cabac, mb_addr, i_info, callbacks, opaque)) {
+            if (!cabac_parse_intra_mb_pred(&cabac, mb_addr, i_info, left, top,
+                                           callbacks, opaque, &pred_event)) {
                 notef(callbacks, opaque, "CABAC intra mb_pred failed mb=%u mb_type=%u bit=%zu",
                       mb_addr, event.mb_type, cabac.bit_pos);
                 free(states);
                 return 0;
             }
+            pred_for_state = &pred_event;
             trace_mb(callbacks, opaque, mb_addr,
                      "CABAC trace mb=%u exit intra mb_pred pred=%s bit=%zu range=%u offset=%u",
                      mb_addr, i_pred_kind_name(i_info.pred_kind),

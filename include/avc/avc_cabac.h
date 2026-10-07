@@ -159,6 +159,10 @@ int avc_cabac_decode_prev_intra_pred_mode_flag(avc_cabac_decoder_t *cabac);
 int avc_cabac_decode_rem_intra_pred_mode(avc_cabac_decoder_t *cabac,
                                          unsigned *mode);
 int avc_cabac_decode_intra_chroma_pred_mode(avc_cabac_decoder_t *cabac,
+                                            int left_available,
+                                            int left_chroma_pred_mode_nonzero,
+                                            int top_available,
+                                            int top_chroma_pred_mode_nonzero,
                                             unsigned *mode);
 int avc_cabac_decode_mb_field_decoding_flag(avc_cabac_decoder_t *cabac,
                                             int left_available, int left_field,
