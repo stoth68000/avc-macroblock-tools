@@ -66,7 +66,7 @@ static void note(avc_macroblock_callbacks_t callbacks, void *opaque, const char 
 static void notef(avc_macroblock_callbacks_t callbacks, void *opaque,
                   const char *fmt, ...)
 {
-    char message[192];
+    char message[320];
     va_list ap;
 
     if (!callbacks.on_note) {
@@ -76,6 +76,29 @@ static void notef(avc_macroblock_callbacks_t callbacks, void *opaque,
     vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
     callbacks.on_note(opaque, message);
+}
+
+static const char *cabac_residual_error_name(int error_syntax)
+{
+    switch ((avc_cabac_residual_error_t)error_syntax) {
+    case AVC_CABAC_RESIDUAL_ERROR_CODED_BLOCK_FLAG:
+        return "coded_block_flag";
+    case AVC_CABAC_RESIDUAL_ERROR_SIGNIFICANT_COEFF_FLAG:
+        return "significant_coeff_flag";
+    case AVC_CABAC_RESIDUAL_ERROR_LAST_SIGNIFICANT_COEFF_FLAG:
+        return "last_significant_coeff_flag";
+    case AVC_CABAC_RESIDUAL_ERROR_COEFF_ABS_LEVEL_MINUS1:
+        return "coeff_abs_level_minus1";
+    case AVC_CABAC_RESIDUAL_ERROR_COEFF_SIGN_FLAG:
+        return "coeff_sign_flag";
+    case AVC_CABAC_RESIDUAL_ERROR_COEFF_SCAN_EXHAUSTED:
+        return "coeff_scan_exhausted";
+    case AVC_CABAC_RESIDUAL_ERROR_INVALID_MAX_COEFF:
+        return "invalid_max_coeff";
+    case AVC_CABAC_RESIDUAL_ERROR_NONE:
+    default:
+        return "unknown";
+    }
 }
 
 static void debug_mb(avc_macroblock_callbacks_t callbacks, void *opaque,
@@ -1913,8 +1936,12 @@ static int cabac_emit_residual_block(avc_cabac_decoder_t *cabac,
                                              scan_mode == AVC_CAVLC_SCAN_TRANSFORM_BYPASS_FIELD,
                                          &residual.cabac_block)) {
         notef(callbacks, opaque,
-              "CABAC residual parse failed mb=%u kind=%u block=%u max_coeff=%u bit=%zu",
-              mb_addr, (unsigned)kind, block_index, max_coeff, cabac->bit_pos);
+              "CABAC residual parse failed syntax=%s mb=%u kind=%u block=%u max_coeff=%u index=%u ctx=%u bit=%zu",
+              cabac_residual_error_name(residual.cabac_block.error_syntax),
+              mb_addr, (unsigned)kind, block_index, max_coeff,
+              residual.cabac_block.error_index,
+              residual.cabac_block.error_context,
+              cabac->bit_pos);
         return 0;
     }
     if (!cabac_fill_coeff_coords(&residual, chroma_format, scan_mode)) {

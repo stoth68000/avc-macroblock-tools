@@ -24,12 +24,26 @@ typedef struct {
 typedef struct {
     unsigned max_coeff;
     unsigned total_coeff;
+    unsigned error_index;
+    unsigned error_context;
+    int error_syntax;
     int coeff_level[64];
     unsigned coeff_x[64];
     unsigned coeff_y[64];
     uint8_t significant[64];
     uint8_t last_significant[64];
 } avc_cabac_residual_block_t;
+
+typedef enum {
+    AVC_CABAC_RESIDUAL_ERROR_NONE = 0,
+    AVC_CABAC_RESIDUAL_ERROR_CODED_BLOCK_FLAG,
+    AVC_CABAC_RESIDUAL_ERROR_SIGNIFICANT_COEFF_FLAG,
+    AVC_CABAC_RESIDUAL_ERROR_LAST_SIGNIFICANT_COEFF_FLAG,
+    AVC_CABAC_RESIDUAL_ERROR_COEFF_ABS_LEVEL_MINUS1,
+    AVC_CABAC_RESIDUAL_ERROR_COEFF_SIGN_FLAG,
+    AVC_CABAC_RESIDUAL_ERROR_COEFF_SCAN_EXHAUSTED,
+    AVC_CABAC_RESIDUAL_ERROR_INVALID_MAX_COEFF
+} avc_cabac_residual_error_t;
 
 void avc_cabac_init(avc_cabac_decoder_t *cabac, const uint8_t *data, size_t size);
 int avc_cabac_init_contexts(avc_cabac_decoder_t *cabac, unsigned slice_qp_y,

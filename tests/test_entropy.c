@@ -795,6 +795,21 @@ int main(void)
     }
 
     {
+        const uint8_t data[] = {0x00, 0x00, 0x00, 0x00};
+        avc_cabac_decoder_t cabac;
+        avc_cabac_residual_block_t block;
+
+        avc_cabac_init(&cabac, data, sizeof(data));
+        assert(!cabac.error);
+        assert(avc_cabac_init_contexts(&cabac, 26, 0, 0));
+        assert(!avc_cabac_decode_residual_block(&cabac, 16, 0, 1, AVC_CABAC_CONTEXTS,
+                                                105, 166, 227, 1, 1, 0, &block));
+        assert(cabac.error);
+        assert(block.error_syntax == AVC_CABAC_RESIDUAL_ERROR_CODED_BLOCK_FLAG);
+        assert(block.error_context >= AVC_CABAC_CONTEXTS);
+    }
+
+    {
         const uint8_t data[] = {0x00, 0x00, 0x55, 0xaa};
         avc_cabac_decoder_t cabac;
         uint32_t sample;
