@@ -22,6 +22,8 @@ typedef struct {
     uint8_t luma_16x16_dc_nonzero;
     uint8_t chroma_dc_nonzero[2];
     uint8_t chroma_ac_nonzero[2][16];
+    uint8_t chroma_dc_coded[2];
+    uint8_t chroma_ac_coded[2][16];
     avc_mb_pred_event_t pred;
 } avc_mb_state_t;
 
@@ -149,6 +151,25 @@ static void trace_mb(avc_macroblock_callbacks_t callbacks, void *opaque,
     va_end(ap);
 
     callbacks.on_note(opaque, message);
+}
+
+static void trace_cabac_phase(avc_macroblock_callbacks_t callbacks,
+                              void *opaque,
+                              uint32_t mb_addr,
+                              const char *phase,
+                              const avc_cabac_decoder_t *cabac)
+{
+    uint32_t distance;
+
+    if (!cabac) {
+        return;
+    }
+    distance = cabac->cod_i_range > cabac->cod_i_offset ?
+        cabac->cod_i_range - cabac->cod_i_offset : 0;
+    trace_mb(callbacks, opaque, mb_addr,
+             "CABAC trace mb=%u phase=%s bit=%zu range=%u offset=%u distance=%u",
+             mb_addr, phase, cabac->bit_pos, cabac->cod_i_range,
+             cabac->cod_i_offset, distance);
 }
 
 typedef struct {
@@ -710,9 +731,11 @@ static void store_residual_nonzero(avc_mb_state_t *curr,
                                    avc_residual_kind_t kind,
                                    unsigned block_index,
                                    unsigned total_coeff,
+                                   unsigned coded_block_flag,
                                    unsigned chroma_format)
 {
     unsigned ac_blocks;
+    uint8_t coded = coded_block_flag ? 1u : 0u;
 
     if (!curr) {
         return;
@@ -741,6 +764,7 @@ static void store_residual_nonzero(avc_mb_state_t *curr,
     case AVC_RESIDUAL_CHROMA_DC:
         if (block_index < 2) {
             curr->chroma_dc_nonzero[block_index] = clipped_nonzero_count(total_coeff);
+            curr->chroma_dc_coded[block_index] = coded;
         }
         break;
     case AVC_RESIDUAL_CHROMA_AC:
@@ -750,6 +774,7 @@ static void store_residual_nonzero(avc_mb_state_t *curr,
             unsigned block = block_index % ac_blocks;
             if (component < 2 && block < 16) {
                 curr->chroma_ac_nonzero[component][block] = clipped_nonzero_count(total_coeff);
+                curr->chroma_ac_coded[component][block] = coded;
             }
         }
         break;
@@ -820,11 +845,28 @@ static int cabac_chroma_dc_cbf_neighbors(const avc_mb_state_t *left,
                                          const avc_mb_state_t *top,
                                          avc_mb_pred_kind_t pred_kind,
                                          unsigned component,
+                                         uint32_t mb_addr,
+                                         avc_macroblock_callbacks_t callbacks,
+                                         void *opaque,
                                          int *left_coded,
                                          int *top_coded)
 {
     if (component >= 2) {
         return 0;
+    }
+    if (left && left->available &&
+        ((left->chroma_dc_coded[component] != 0) != (left->chroma_dc_nonzero[component] != 0))) {
+        notef(callbacks, opaque,
+              "CABAC chroma neighbor mismatch mb=%u kind=dc component=%u side=left coded=%u nonzero=%u",
+              mb_addr, component, left->chroma_dc_coded[component],
+              left->chroma_dc_nonzero[component]);
+    }
+    if (top && top->available &&
+        ((top->chroma_dc_coded[component] != 0) != (top->chroma_dc_nonzero[component] != 0))) {
+        notef(callbacks, opaque,
+              "CABAC chroma neighbor mismatch mb=%u kind=dc component=%u side=top coded=%u nonzero=%u",
+              mb_addr, component, top->chroma_dc_coded[component],
+              top->chroma_dc_nonzero[component]);
     }
     *left_coded = left && left->available ? left->chroma_dc_nonzero[component] != 0 :
                                             pred_kind != AVC_MB_PRED_INTER;
@@ -840,6 +882,9 @@ static int cabac_chroma_ac_cbf_neighbors(const avc_mb_state_t *curr,
                                          unsigned chroma_format,
                                          unsigned component,
                                          unsigned block,
+                                         uint32_t mb_addr,
+                                         avc_macroblock_callbacks_t callbacks,
+                                         void *opaque,
                                          int *left_coded,
                                          int *top_coded)
 {
@@ -858,13 +903,47 @@ static int cabac_chroma_ac_cbf_neighbors(const avc_mb_state_t *curr,
     y = block / width;
 
     if (x > 0) {
+        if ((curr->chroma_ac_coded[component][block - 1u] != 0) !=
+            (curr->chroma_ac_nonzero[component][block - 1u] != 0)) {
+            notef(callbacks, opaque,
+                  "CABAC chroma neighbor mismatch mb=%u kind=ac component=%u block=%u side=left-current coded=%u nonzero=%u",
+                  mb_addr, component, block,
+                  curr->chroma_ac_coded[component][block - 1u],
+                  curr->chroma_ac_nonzero[component][block - 1u]);
+        }
         *left_coded = curr->chroma_ac_nonzero[component][block - 1u] != 0;
     } else if (left && left->available) {
+        unsigned left_block = y * width + (width - 1u);
+        if ((left->chroma_ac_coded[component][left_block] != 0) !=
+            (left->chroma_ac_nonzero[component][left_block] != 0)) {
+            notef(callbacks, opaque,
+                  "CABAC chroma neighbor mismatch mb=%u kind=ac component=%u block=%u side=left coded=%u nonzero=%u",
+                  mb_addr, component, block,
+                  left->chroma_ac_coded[component][left_block],
+                  left->chroma_ac_nonzero[component][left_block]);
+        }
         *left_coded = left->chroma_ac_nonzero[component][y * width + (width - 1u)] != 0;
     }
     if (y > 0) {
+        if ((curr->chroma_ac_coded[component][block - width] != 0) !=
+            (curr->chroma_ac_nonzero[component][block - width] != 0)) {
+            notef(callbacks, opaque,
+                  "CABAC chroma neighbor mismatch mb=%u kind=ac component=%u block=%u side=top-current coded=%u nonzero=%u",
+                  mb_addr, component, block,
+                  curr->chroma_ac_coded[component][block - width],
+                  curr->chroma_ac_nonzero[component][block - width]);
+        }
         *top_coded = curr->chroma_ac_nonzero[component][block - width] != 0;
     } else if (top && top->available) {
+        unsigned top_block = (height - 1u) * width + x;
+        if ((top->chroma_ac_coded[component][top_block] != 0) !=
+            (top->chroma_ac_nonzero[component][top_block] != 0)) {
+            notef(callbacks, opaque,
+                  "CABAC chroma neighbor mismatch mb=%u kind=ac component=%u block=%u side=top coded=%u nonzero=%u",
+                  mb_addr, component, block,
+                  top->chroma_ac_coded[component][top_block],
+                  top->chroma_ac_nonzero[component][top_block]);
+        }
         *top_coded = top->chroma_ac_nonzero[component][(height - 1u) * width + x] != 0;
     }
     return 1;
@@ -889,8 +968,10 @@ static void cavlc_mark_ipcm_nonzero(avc_mb_state_t *state, const avc_sps_t *sps)
     for (i = 0; i < 2; i++) {
         unsigned block;
         state->chroma_dc_nonzero[i] = chroma_format == 0 ? 0 : 16;
+        state->chroma_dc_coded[i] = chroma_format == 0 ? 0 : 1;
         for (block = 0; block < ac_blocks && block < 16; block++) {
             state->chroma_ac_nonzero[i][block] = 15;
+            state->chroma_ac_coded[i][block] = 1;
         }
     }
 }
@@ -2257,7 +2338,16 @@ static int cabac_emit_residual_block(avc_cabac_decoder_t *cabac,
         cabac->error = 1;
         return 0;
     }
+    if ((kind == AVC_RESIDUAL_CHROMA_DC || kind == AVC_RESIDUAL_CHROMA_AC) &&
+        residual.cabac_block.coded_block_flag != (residual.cabac_block.total_coeff != 0)) {
+        notef(callbacks, opaque,
+              "CABAC chroma coded/nonzero mismatch mb=%u kind=%u block=%u coded=%u total_coeff=%u bit=%zu",
+              mb_addr, (unsigned)kind, block_index,
+              residual.cabac_block.coded_block_flag,
+              residual.cabac_block.total_coeff, cabac->bit_pos);
+    }
     store_residual_nonzero(curr, kind, block_index, residual.cabac_block.total_coeff,
+                           residual.cabac_block.coded_block_flag,
                            chroma_format);
     fill_residual_metadata(&residual, pps, sps, event, pred_kind);
     if (callbacks.on_residual) {
@@ -2373,7 +2463,8 @@ static int cabac_emit_chroma_residuals(avc_cabac_decoder_t *cabac,
     for (component = 0; component < 2; component++) {
         int left_coded;
         int top_coded;
-        cabac_chroma_dc_cbf_neighbors(left, top, pred_kind, component, &left_coded, &top_coded);
+        cabac_chroma_dc_cbf_neighbors(left, top, pred_kind, component, mb_addr,
+                                      callbacks, opaque, &left_coded, &top_coded);
         if (!cabac_emit_residual_block(cabac, mb_addr, AVC_RESIDUAL_CHROMA_DC,
                                        component, dc_coeffs, left_coded, top_coded,
                                        pps, sps, event, pred_kind, chroma_format,
@@ -2393,7 +2484,8 @@ static int cabac_emit_chroma_residuals(avc_cabac_decoder_t *cabac,
             int left_coded;
             int top_coded;
             cabac_chroma_ac_cbf_neighbors(curr, left, top, pred_kind, chroma_format,
-                                          component, block, &left_coded, &top_coded);
+                                          component, block, mb_addr, callbacks, opaque,
+                                          &left_coded, &top_coded);
             if (!cabac_emit_residual_block(cabac, mb_addr, AVC_RESIDUAL_CHROMA_AC,
                                            block_index, 0, left_coded, top_coded,
                                            pps, sps, event, pred_kind, chroma_format,
@@ -2757,6 +2849,7 @@ static int cavlc_emit_residual_block(avc_bitreader_t *br,
         return 0;
     }
     store_residual_nonzero(curr, kind, block_index, residual.block.total_coeff,
+                           residual.block.total_coeff != 0,
                            chroma_format);
     fill_residual_metadata(&residual, pps, sps, event, pred_kind);
     if (callbacks.on_residual) {
@@ -3425,6 +3518,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
         pred_event = (avc_mb_pred_event_t){0};
         neighbor_states4(states, max_mbs, width, mb_addr, &left, &top,
                          &top_right, &top_left);
+        trace_cabac_phase(callbacks, opaque, mb_addr, "entry", &cabac);
 
         if (slice->slice_kind == AVC_SLICE_P || slice->slice_kind == AVC_SLICE_SP ||
             slice->slice_kind == AVC_SLICE_B) {
@@ -3470,6 +3564,8 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 summary->next_mb_address = mb_addr;
                 prev_mb_qp_delta_nonzero = 0;
                 prev_mb_skipped = 1;
+                trace_cabac_phase(callbacks, opaque, mb_addr - 1u,
+                                  "before_end_of_slice", &cabac);
                 {
                     int end_of_slice = avc_cabac_decode_terminate(&cabac);
                     if (cabac.error) {
@@ -3536,6 +3632,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                      mb_addr, event.mb_type, i_pred_kind_name(i_info.pred_kind),
                      i_info.cbp_luma, i_info.cbp_chroma,
                      cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_mb_type", &cabac);
         } else if (slice->slice_kind == AVC_SLICE_B) {
             if (!avc_cabac_decode_mb_type_b(&cabac,
                                             left && left->available,
@@ -3552,6 +3649,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                      "CABAC debug mb=%u after mb_type=%u bit=%zu range=%u offset=%u",
                      mb_addr, event.mb_type, cabac.bit_pos,
                      cabac.cod_i_range, cabac.cod_i_offset);
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_mb_type", &cabac);
             b_info = avc_b_mb_type_classify(event.mb_type);
             if (b_info.shape == AVC_B_MB_UNKNOWN) {
                 notef(callbacks, opaque,
@@ -3582,6 +3680,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                      "CABAC trace mb=%u exit P mb_type value=%u shape=%s bit=%zu range=%u offset=%u",
                      mb_addr, event.mb_type, p_mb_shape_name(p_info.shape),
                      cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_mb_type", &cabac);
             if (p_info.shape == AVC_P_MB_UNKNOWN) {
                 notef(callbacks, opaque,
                       "unsupported P-slice CABAC macroblock type mb=%u mb_type=%u bit=%zu",
@@ -3691,6 +3790,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                      "CABAC trace mb=%u exit intra mb_pred pred=%s bit=%zu range=%u offset=%u",
                      mb_addr, i_pred_kind_name(i_info.pred_kind),
                      cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_prediction", &cabac);
             if (i_info.pred_kind == AVC_MB_PRED_INTRA_4X4 || i_info.pred_kind == AVC_MB_PRED_INTRA_8X8) {
                 trace_mb(callbacks, opaque, mb_addr,
                          "CABAC trace mb=%u enter intra coded_block_pattern_luma left_available=%d left_cbp_luma=%u top_available=%d top_cbp_luma=%u bit=%zu range=%u offset=%u",
@@ -3738,6 +3838,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                          "CABAC trace mb=%u exit intra coded_block_pattern_chroma value=%u bit=%zu range=%u offset=%u",
                          mb_addr, event.coded_block_pattern_chroma, cabac.bit_pos,
                          cabac.cod_i_range, cabac.cod_i_offset);
+                trace_cabac_phase(callbacks, opaque, mb_addr, "after_cbp", &cabac);
             } else {
                 event.coded_block_pattern_luma = i_info.cbp_luma;
                 event.coded_block_pattern_chroma = i_info.cbp_chroma;
@@ -3745,6 +3846,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                          "CABAC trace mb=%u intra coded_block_pattern from mb_type cbp_luma=%u cbp_chroma=%u",
                          mb_addr, event.coded_block_pattern_luma,
                          event.coded_block_pattern_chroma);
+                trace_cabac_phase(callbacks, opaque, mb_addr, "after_cbp", &cabac);
             }
             trace_mb(callbacks, opaque, mb_addr,
                      "CABAC trace mb=%u mb_qp_delta_present=%d cbp_luma=%u cbp_chroma=%u pred=%s prev_mb_qp_delta_nonzero=%d bit=%zu range=%u offset=%u",
@@ -3770,6 +3872,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                          mb_addr, event.mb_qp_delta, cabac.bit_pos,
                          cabac.cod_i_range, cabac.cod_i_offset);
             }
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_mb_qp_delta", &cabac);
         } else if (p_info.shape == AVC_P_MB_L0_16X16 ||
                    p_info.shape == AVC_P_MB_L0_L0_16X8 ||
                    p_info.shape == AVC_P_MB_L0_L0_8X16 ||
@@ -3793,6 +3896,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
             trace_mb(callbacks, opaque, mb_addr,
                      "CABAC trace mb=%u exit P mb_pred bit=%zu range=%u offset=%u",
                      mb_addr, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_prediction", &cabac);
             pred_for_state = &pred_event;
             trace_mb(callbacks, opaque, mb_addr,
                      "CABAC trace mb=%u enter coded_block_pattern_luma left_available=%d left_cbp_luma=%u top_available=%d top_cbp_luma=%u bit=%zu range=%u offset=%u",
@@ -3840,6 +3944,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                      "CABAC trace mb=%u exit coded_block_pattern_chroma value=%u bit=%zu range=%u offset=%u",
                      mb_addr, event.coded_block_pattern_chroma, cabac.bit_pos,
                      cabac.cod_i_range, cabac.cod_i_offset);
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_cbp", &cabac);
             if ((slice->num_ref_idx_l0_active_minus1 > 0 &&
                  inter_transform_size_8x8_flag_present(pps, sps, &event, &pred_event)) ||
                 (slice->num_ref_idx_l0_active_minus1 == 0 &&
@@ -3893,6 +3998,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                          mb_addr, event.mb_qp_delta, cabac.bit_pos,
                          cabac.cod_i_range, cabac.cod_i_offset);
             }
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_mb_qp_delta", &cabac);
         } else if (b_info.shape == AVC_B_MB_DIRECT ||
                    b_info.shape == AVC_B_MB_INTER ||
                    b_info.shape == AVC_B_MB_8X8) {
@@ -3908,6 +4014,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
             debug_mb(callbacks, opaque, mb_addr,
                      "CABAC debug mb=%u after B mb_pred bit=%zu range=%u offset=%u",
                      mb_addr, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_prediction", &cabac);
             pred_for_state = &pred_event;
             if (!avc_cabac_decode_coded_block_pattern_luma(&cabac,
                                                            left && left->available,
@@ -3941,6 +4048,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                      "CABAC debug mb=%u after cbp_chroma=%u bit=%zu range=%u offset=%u",
                      mb_addr, event.coded_block_pattern_chroma, cabac.bit_pos,
                      cabac.cod_i_range, cabac.cod_i_offset);
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_cbp", &cabac);
             if (inter_transform_size_8x8_flag_present(pps, sps, &event, &pred_event)) {
                 event.transform_size_8x8_flag =
                     avc_cabac_decode_transform_size_8x8_flag(&cabac,
@@ -3972,6 +4080,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                          mb_addr, event.mb_qp_delta, cabac.bit_pos,
                          cabac.cod_i_range, cabac.cod_i_offset);
             }
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_mb_qp_delta", &cabac);
         }
 
         curr_qp_y = avc_mb_qp_y_from_delta(curr_qp_y, event.mb_qp_delta, sps);
@@ -3997,6 +4106,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_luma_residuals", &cabac);
             if (!cabac_emit_chroma_residuals(&cabac, mb_addr, pps, sps, &event,
                                              i_info.pred_kind,
                                              event.coded_block_pattern_chroma,
@@ -4006,6 +4116,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_chroma_residuals", &cabac);
         } else if (p_info.shape == AVC_P_MB_L0_16X16 ||
                    p_info.shape == AVC_P_MB_L0_L0_16X8 ||
                    p_info.shape == AVC_P_MB_L0_L0_8X16 ||
@@ -4028,6 +4139,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
             debug_mb(callbacks, opaque, mb_addr,
                      "CABAC debug mb=%u after luma residuals bit=%zu range=%u offset=%u",
                      mb_addr, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_luma_residuals", &cabac);
             if (!cabac_emit_chroma_residuals(&cabac, mb_addr, pps, sps, &event,
                                              AVC_MB_PRED_INTER,
                                              event.coded_block_pattern_chroma,
@@ -4043,6 +4155,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
             debug_mb(callbacks, opaque, mb_addr,
                      "CABAC debug mb=%u after chroma residuals bit=%zu range=%u offset=%u",
                      mb_addr, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_chroma_residuals", &cabac);
         } else if (b_info.shape == AVC_B_MB_DIRECT ||
                    b_info.shape == AVC_B_MB_INTER ||
                    b_info.shape == AVC_B_MB_8X8) {
@@ -4057,6 +4170,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_luma_residuals", &cabac);
             if (!cabac_emit_chroma_residuals(&cabac, mb_addr, pps, sps, &event,
                                              AVC_MB_PRED_INTER,
                                              event.coded_block_pattern_chroma,
@@ -4066,6 +4180,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
+            trace_cabac_phase(callbacks, opaque, mb_addr, "after_chroma_residuals", &cabac);
         } else if (i_info.pred_kind == AVC_MB_PRED_UNKNOWN) {
             note(callbacks, opaque, "unsupported CABAC macroblock type");
             cabac.error = 1;
@@ -4085,6 +4200,8 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
             return 1;
         }
         {
+            trace_cabac_phase(callbacks, opaque, mb_addr - 1u,
+                              "before_end_of_slice", &cabac);
             int end_of_slice = avc_cabac_decode_terminate(&cabac);
             if (cabac.error) {
                 notef(callbacks, opaque,
