@@ -58,6 +58,7 @@ typedef struct {
     uint8_t sub_partition_height[AVC_MB_PRED_MAX_PARTITIONS];
     uint8_t list_mask[AVC_MB_PRED_MAX_PARTITIONS];
     uint8_t direct_flag[AVC_MB_PRED_MAX_PARTITIONS];
+    uint8_t direct_temporal_unsupported_flag[AVC_MB_PRED_MAX_PARTITIONS];
     uint8_t direct_spatial_mv_pred_flag;
     unsigned sub_mb_type[AVC_MB_PRED_MAX_PARTITIONS];
     unsigned ref_idx_l0[AVC_MB_PRED_MAX_PARTITIONS];
@@ -76,6 +77,7 @@ typedef struct {
     uint8_t sub_part_height[AVC_MB_PRED_MAX_SUB_PARTITIONS];
     uint8_t sub_part_list_mask[AVC_MB_PRED_MAX_SUB_PARTITIONS];
     uint8_t sub_part_direct_flag[AVC_MB_PRED_MAX_SUB_PARTITIONS];
+    uint8_t sub_part_direct_temporal_unsupported_flag[AVC_MB_PRED_MAX_SUB_PARTITIONS];
     unsigned sub_part_ref_idx_l0[AVC_MB_PRED_MAX_SUB_PARTITIONS];
     unsigned sub_part_ref_idx_l1[AVC_MB_PRED_MAX_SUB_PARTITIONS];
     int16_t sub_part_mvd_l0[AVC_MB_PRED_MAX_SUB_PARTITIONS][2];
@@ -203,6 +205,7 @@ void avc_mb_derive_direct_spatial_mv(unsigned partition,
                                      avc_mv_predictor_candidate_t c,
                                      int16_t mv_pred[2],
                                      int16_t mv[2]);
+int avc_mb_direct_temporal_unsupported(uint8_t direct_spatial_mv_pred_flag);
 int avc_parse_slice_data(const uint8_t *rbsp, size_t rbsp_size,
                          const avc_slice_header_t *slice,
                          const avc_parameter_sets_t *sets,

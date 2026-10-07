@@ -392,8 +392,10 @@ static void print_partition_details(const probe_options_t *options,
                pred->partition_width[i], pred->partition_height[i],
                pred->sub_mb_type[i]);
         print_sub_partitions(pred, i);
-        printf(",\"direct\":%s,\"list_mask\":%u",
-               pred->direct_flag[i] ? "true" : "false", pred->list_mask[i]);
+        printf(",\"direct\":%s,\"direct_temporal_unsupported\":%s,\"list_mask\":%u",
+               pred->direct_flag[i] ? "true" : "false",
+               pred->direct_temporal_unsupported_flag[i] ? "true" : "false",
+               pred->list_mask[i]);
         if (pred->list_mask[i] & 1u) {
             printf(",\"l0\":{\"ref_idx\":%u,\"ref\":", pred->ref_idx_l0[i]);
             print_partition_ref_json(options, 0, pred->ref_idx_l0[i]);
@@ -434,11 +436,12 @@ static void print_sub_partition_motion_details(const probe_options_t *options,
             printf(",");
         }
         printf("{\"index\":%u,\"parent\":%u,\"x\":%u,\"y\":%u,\"w\":%u,\"h\":%u,"
-               "\"direct\":%s,\"list_mask\":%u",
+               "\"direct\":%s,\"direct_temporal_unsupported\":%s,\"list_mask\":%u",
                i, pred->sub_partition_parent[i], pred->sub_part_x[i],
                pred->sub_part_y[i], pred->sub_part_width[i],
                pred->sub_part_height[i],
                pred->sub_part_direct_flag[i] ? "true" : "false",
+               pred->sub_part_direct_temporal_unsupported_flag[i] ? "true" : "false",
                pred->sub_part_list_mask[i]);
         if (pred->sub_part_list_mask[i] & 1u) {
             printf(",\"l0\":{\"ref_idx\":%u,\"ref\":",
@@ -476,13 +479,15 @@ static void on_mb_pred(void *opaque, const avc_mb_pred_event_t *pred)
     if (!want_mb(options, pred->mb_address)) {
         return;
     }
-    printf("{\"event\":\"mb_pred\",\"picture_index\":%u,\"slice_index\":%u,\"slice_in_picture\":%u,\"nal_index\":%u,\"mb_address\":%u,\"kind\":\"%s\",\"intra_chroma_pred_mode\":%u,\"partitions\":%u,\"direct_spatial\":%u,\"direct\":[%u,%u,%u,%u],\"list_mask\":[%u,%u,%u,%u],\"ref0\":[%u,%u,%u,%u],\"ref1\":[%u,%u,%u,%u],\"mvd0\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"mvd1\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"mv_pred0\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"mv_pred1\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"mv0\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"mv1\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"sub_mb_type\":[%u,%u,%u,%u],\"sub_partition_total\":%u,\"partition_detail\":",
+    printf("{\"event\":\"mb_pred\",\"picture_index\":%u,\"slice_index\":%u,\"slice_in_picture\":%u,\"nal_index\":%u,\"mb_address\":%u,\"kind\":\"%s\",\"intra_chroma_pred_mode\":%u,\"partitions\":%u,\"direct_spatial\":%u,\"direct\":[%u,%u,%u,%u],\"direct_temporal_unsupported\":[%u,%u,%u,%u],\"list_mask\":[%u,%u,%u,%u],\"ref0\":[%u,%u,%u,%u],\"ref1\":[%u,%u,%u,%u],\"mvd0\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"mvd1\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"mv_pred0\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"mv_pred1\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"mv0\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"mv1\":[[%d,%d],[%d,%d],[%d,%d],[%d,%d]],\"sub_mb_type\":[%u,%u,%u,%u],\"sub_partition_total\":%u,\"partition_detail\":",
            options->current_picture_index, options->current_slice_index,
            options->current_slice_in_picture, options->current_nal_index,
            pred->mb_address, mb_pred_kind_name(pred->kind), pred->intra_chroma_pred_mode,
            pred->partition_count,
            pred->direct_spatial_mv_pred_flag,
            pred->direct_flag[0], pred->direct_flag[1], pred->direct_flag[2], pred->direct_flag[3],
+           pred->direct_temporal_unsupported_flag[0], pred->direct_temporal_unsupported_flag[1],
+           pred->direct_temporal_unsupported_flag[2], pred->direct_temporal_unsupported_flag[3],
            pred->list_mask[0], pred->list_mask[1], pred->list_mask[2], pred->list_mask[3],
            pred->ref_idx_l0[0], pred->ref_idx_l0[1], pred->ref_idx_l0[2], pred->ref_idx_l0[3],
            pred->ref_idx_l1[0], pred->ref_idx_l1[1], pred->ref_idx_l1[2], pred->ref_idx_l1[3],

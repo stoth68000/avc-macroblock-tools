@@ -355,5 +355,10 @@ int main(void)
         assert(mv[0] == 20 && mv[1] == 8);
     }
 
+    {
+        assert(!avc_mb_direct_temporal_unsupported(1));
+        assert(avc_mb_direct_temporal_unsupported(0));
+    }
+
     return 0;
 }

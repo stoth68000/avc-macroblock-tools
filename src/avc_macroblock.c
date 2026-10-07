@@ -1323,7 +1323,9 @@ static void derive_direct_partition_geometry(avc_mb_pred_event_t *pred,
     pred->mvd_l1[partition][0] = 0;
     pred->mvd_l1[partition][1] = 0;
 
-    if (!slice->direct_spatial_mv_pred_flag) {
+    if (avc_mb_direct_temporal_unsupported(slice->direct_spatial_mv_pred_flag)) {
+        pred->list_mask[partition] = 0;
+        pred->direct_temporal_unsupported_flag[partition] = 1;
         pred->ref_idx_l0[partition] = 0;
         pred->ref_idx_l1[partition] = 0;
         pred->mv_pred_l0[partition][0] = 0;

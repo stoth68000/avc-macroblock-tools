@@ -260,6 +260,11 @@ void avc_mb_derive_direct_spatial_mv(unsigned partition,
     }
 }
 
+int avc_mb_direct_temporal_unsupported(uint8_t direct_spatial_mv_pred_flag)
+{
+    return direct_spatial_mv_pred_flag == 0;
+}
+
 avc_i_mb_type_info_t avc_i_mb_type_classify(uint32_t mb_type)
 {
     avc_i_mb_type_info_t info;
@@ -539,6 +544,8 @@ void avc_mb_populate_sub_partition_motion(avc_mb_pred_event_t *pred)
             pred->sub_part_height[out] = (uint8_t)sub_height;
             pred->sub_part_list_mask[out] = pred->list_mask[partition];
             pred->sub_part_direct_flag[out] = pred->direct_flag[partition];
+            pred->sub_part_direct_temporal_unsupported_flag[out] =
+                pred->direct_temporal_unsupported_flag[partition];
             pred->sub_part_ref_idx_l0[out] = pred->ref_idx_l0[partition];
             pred->sub_part_ref_idx_l1[out] = pred->ref_idx_l1[partition];
             copy_mv_pair(pred->sub_part_mvd_l0[out], pred->mvd_l0[partition]);
