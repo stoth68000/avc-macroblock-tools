@@ -41,6 +41,26 @@ void avc_cabac_byte_align(avc_cabac_decoder_t *cabac);
 uint32_t avc_cabac_read_pcm_bits(avc_cabac_decoder_t *cabac, unsigned n);
 void avc_cabac_set_context(avc_cabac_decoder_t *cabac, unsigned ctx_idx,
                            uint8_t state, uint8_t mps);
+unsigned avc_cabac_ctx_coded_block_pattern_luma(unsigned bin_idx,
+                                                int left_available, unsigned left_cbp_luma,
+                                                int top_available, unsigned top_cbp_luma,
+                                                unsigned prior_cbp_luma);
+unsigned avc_cabac_ctx_coded_block_pattern_chroma(unsigned bin_idx,
+                                                  int left_available, unsigned left_cbp_chroma,
+                                                  int top_available, unsigned top_cbp_chroma);
+unsigned avc_cabac_ctx_transform_size_8x8(int left_transform_8x8,
+                                          int top_transform_8x8);
+unsigned avc_cabac_ctx_mb_qp_delta(int previous_mb_qp_delta_nonzero);
+unsigned avc_cabac_ctx_mb_field_decoding_flag(int left_available, int left_field,
+                                              int top_available, int top_field);
+unsigned avc_cabac_ctx_ref_idx(int left_nonzero, int top_nonzero);
+unsigned avc_cabac_ctx_mvd(unsigned abs_mvd_left, unsigned abs_mvd_top);
+unsigned avc_cabac_ctx_coded_block_flag(int left_coded, int top_coded);
+unsigned avc_cabac_ctx_residual_flag(unsigned ctx_block_cat,
+                                     unsigned scan_index,
+                                     unsigned max_coeff,
+                                     int field_scan,
+                                     int last_significant);
 int avc_cabac_decode_mb_skip_flag(avc_cabac_decoder_t *cabac, unsigned slice_type,
                                   int left_available, int left_skipped,
                                   int top_available, int top_skipped);

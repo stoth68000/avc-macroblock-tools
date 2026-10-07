@@ -1412,6 +1412,128 @@ int avc_cabac_decode_mb_type_b(avc_cabac_decoder_t *cabac,
     return !cabac->error;
 }
 
+unsigned avc_cabac_ctx_coded_block_pattern_luma(unsigned bin_idx,
+                                                int left_available, unsigned left_cbp_luma,
+                                                int top_available, unsigned top_cbp_luma,
+                                                unsigned prior_cbp_luma)
+{
+    unsigned ctx_inc = 0;
+    int left_coded;
+    int top_coded;
+
+    if (bin_idx & 1u) {
+        left_coded = ((prior_cbp_luma >> (bin_idx - 1u)) & 1u) != 0;
+    } else {
+        unsigned left_block = bin_idx + 1u;
+        left_coded = left_available ? ((left_cbp_luma >> left_block) & 1u) != 0 : 0;
+    }
+
+    if (bin_idx >= 2u) {
+        top_coded = ((prior_cbp_luma >> (bin_idx - 2u)) & 1u) != 0;
+    } else {
+        unsigned top_block = bin_idx + 2u;
+        top_coded = top_available ? ((top_cbp_luma >> top_block) & 1u) != 0 : 0;
+    }
+
+    if (!left_coded) {
+        ctx_inc++;
+    }
+    if (!top_coded) {
+        ctx_inc += 2;
+    }
+    return ctx_inc;
+}
+
+unsigned avc_cabac_ctx_coded_block_pattern_chroma(unsigned bin_idx,
+                                                  int left_available, unsigned left_cbp_chroma,
+                                                  int top_available, unsigned top_cbp_chroma)
+{
+    unsigned ctx_inc = 0;
+
+    if (bin_idx == 0) {
+        if (!left_available || left_cbp_chroma == 0) {
+            ctx_inc++;
+        }
+        if (!top_available || top_cbp_chroma == 0) {
+            ctx_inc += 2;
+        }
+        return ctx_inc;
+    }
+
+    if (!left_available || left_cbp_chroma < 2) {
+        ctx_inc++;
+    }
+    if (!top_available || top_cbp_chroma < 2) {
+        ctx_inc += 2;
+    }
+    return ctx_inc;
+}
+
+unsigned avc_cabac_ctx_transform_size_8x8(int left_transform_8x8,
+                                          int top_transform_8x8)
+{
+    unsigned ctx_inc = 0;
+
+    if (left_transform_8x8) {
+        ctx_inc++;
+    }
+    if (top_transform_8x8) {
+        ctx_inc++;
+    }
+    return ctx_inc;
+}
+
+unsigned avc_cabac_ctx_mb_qp_delta(int previous_mb_qp_delta_nonzero)
+{
+    return previous_mb_qp_delta_nonzero ? 61u : 60u;
+}
+
+unsigned avc_cabac_ctx_mb_field_decoding_flag(int left_available, int left_field,
+                                              int top_available, int top_field)
+{
+    unsigned ctx_inc = 0;
+
+    if (left_available && left_field) {
+        ctx_inc++;
+    }
+    if (top_available && top_field) {
+        ctx_inc++;
+    }
+    return ctx_inc;
+}
+
+unsigned avc_cabac_ctx_ref_idx(int left_nonzero, int top_nonzero)
+{
+    unsigned ctx_inc = 0;
+
+    if (left_nonzero) {
+        ctx_inc++;
+    }
+    if (top_nonzero) {
+        ctx_inc += 2;
+    }
+    return ctx_inc;
+}
+
+unsigned avc_cabac_ctx_mvd(unsigned abs_mvd_left, unsigned abs_mvd_top)
+{
+    unsigned e = abs_mvd_left + abs_mvd_top;
+    return e < 3 ? 0u : (e > 32 ? 2u : 1u);
+}
+
+unsigned avc_cabac_ctx_coded_block_flag(int left_coded, int top_coded)
+{
+    unsigned ctx_inc = 0;
+
+    if (left_coded) {
+        ctx_inc++;
+    }
+    if (top_coded) {
+        ctx_inc += 2;
+    }
+    return ctx_inc;
+}
+
 int avc_cabac_decode_coded_block_pattern_luma(avc_cabac_decoder_t *cabac,
                                               int left_available, unsigned left_cbp_luma,
                                               int top_available, unsigned top_cbp_luma,
@@ -1421,30 +1543,11 @@ int avc_cabac_decode_coded_block_pattern_luma(avc_cabac_decoder_t *cabac,
     unsigned cbp = 0;
 
     for (i = 0; i < 4; i++) {
-        unsigned ctx_inc = 0;
-        int left_coded;
-        int top_coded;
-
-        if (i & 1u) {
-            left_coded = ((cbp >> (i - 1u)) & 1u) != 0;
-        } else {
-            unsigned left_block = i + 1u;
-            left_coded = left_available ? ((left_cbp_luma >> left_block) & 1u) != 0 : 0;
-        }
-
-        if (i >= 2u) {
-            top_coded = ((cbp >> (i - 2u)) & 1u) != 0;
-        } else {
-            unsigned top_block = i + 2u;
-            top_coded = top_available ? ((top_cbp_luma >> top_block) & 1u) != 0 : 0;
-        }
-
-        if (!left_coded) {
-            ctx_inc++;
-        }
-        if (!top_coded) {
-            ctx_inc += 2;
-        }
+        unsigned ctx_inc = avc_cabac_ctx_coded_block_pattern_luma(i, left_available,
+                                                                  left_cbp_luma,
+                                                                  top_available,
+                                                                  top_cbp_luma,
+                                                                  cbp);
         int bin = avc_cabac_decode_decision(cabac, 73 + ctx_inc);
         if (cabac->error) {
             return 0;
@@ -1460,17 +1563,13 @@ int avc_cabac_decode_coded_block_pattern_chroma(avc_cabac_decoder_t *cabac,
                                                 int top_available, unsigned top_cbp_chroma,
                                                 unsigned *coded_block_pattern_chroma)
 {
-    unsigned ctx_inc0 = 0;
-    unsigned ctx_inc1 = 0;
+    unsigned ctx_inc0;
+    unsigned ctx_inc1;
     unsigned value = 0;
     int bin;
 
-    if (!left_available || left_cbp_chroma == 0) {
-        ctx_inc0++;
-    }
-    if (!top_available || top_cbp_chroma == 0) {
-        ctx_inc0 += 2;
-    }
+    ctx_inc0 = avc_cabac_ctx_coded_block_pattern_chroma(0, left_available, left_cbp_chroma,
+                                                        top_available, top_cbp_chroma);
     bin = avc_cabac_decode_decision(cabac, 77 + ctx_inc0);
     if (cabac->error) {
         return 0;
@@ -1481,12 +1580,8 @@ int avc_cabac_decode_coded_block_pattern_chroma(avc_cabac_decoder_t *cabac,
     }
 
     value = 1;
-    if (!left_available || left_cbp_chroma < 2) {
-        ctx_inc1++;
-    }
-    if (!top_available || top_cbp_chroma < 2) {
-        ctx_inc1 += 2;
-    }
+    ctx_inc1 = avc_cabac_ctx_coded_block_pattern_chroma(1, left_available, left_cbp_chroma,
+                                                        top_available, top_cbp_chroma);
     bin = avc_cabac_decode_decision(cabac, 81 + ctx_inc1);
     if (cabac->error) {
         return 0;
@@ -1502,14 +1597,7 @@ int avc_cabac_decode_transform_size_8x8_flag(avc_cabac_decoder_t *cabac,
                                              int left_transform_8x8,
                                              int top_transform_8x8)
 {
-    unsigned ctx_inc = 0;
-
-    if (left_transform_8x8) {
-        ctx_inc++;
-    }
-    if (top_transform_8x8) {
-        ctx_inc++;
-    }
+    unsigned ctx_inc = avc_cabac_ctx_transform_size_8x8(left_transform_8x8, top_transform_8x8);
     return avc_cabac_decode_decision(cabac, 399 + ctx_inc);
 }
 
@@ -1518,7 +1606,7 @@ int avc_cabac_decode_mb_qp_delta(avc_cabac_decoder_t *cabac,
                                  int *mb_qp_delta)
 {
     unsigned prefix = 0;
-    unsigned ctx_idx = previous_mb_qp_delta_nonzero ? 61u : 60u;
+    unsigned ctx_idx = avc_cabac_ctx_mb_qp_delta(previous_mb_qp_delta_nonzero);
     unsigned continuation_ctx_idx = 62;
 
     if (avc_cabac_decode_decision(cabac, ctx_idx) == 0) {
@@ -1585,14 +1673,8 @@ int avc_cabac_decode_mb_field_decoding_flag(avc_cabac_decoder_t *cabac,
                                             int left_available, int left_field,
                                             int top_available, int top_field)
 {
-    unsigned ctx_inc = 0;
-
-    if (left_available && left_field) {
-        ctx_inc++;
-    }
-    if (top_available && top_field) {
-        ctx_inc++;
-    }
+    unsigned ctx_inc = avc_cabac_ctx_mb_field_decoding_flag(left_available, left_field,
+                                                           top_available, top_field);
     return avc_cabac_decode_decision(cabac, 70 + ctx_inc);
 }
 
@@ -1603,6 +1685,11 @@ int avc_cabac_decode_ref_idx_l0(avc_cabac_decoder_t *cabac,
     unsigned value;
     unsigned ctx_inc = 0;
 
+    /*
+     * The spec context helper is exposed and tested above, but the current
+     * macroblock parser still feeds simplified neighbor terms here. Keep the
+     * decode path behavior-preserving until neighbor derivation is audited.
+     */
     if (left_nonzero) {
         ctx_inc++;
     }
@@ -1643,8 +1730,7 @@ int avc_cabac_decode_mvd_component(avc_cabac_decoder_t *cabac,
                                    unsigned abs_mvd_top,
                                    int16_t *mvd)
 {
-    unsigned e = abs_mvd_left + abs_mvd_top;
-    unsigned ctx_inc = e < 3 ? 0u : (e > 32 ? 2u : 1u);
+    unsigned ctx_inc = avc_cabac_ctx_mvd(abs_mvd_left, abs_mvd_top);
     unsigned prefix = 0;
     unsigned suffix = 0;
     int sign;
@@ -1736,19 +1822,13 @@ int avc_cabac_decode_coded_block_flag(avc_cabac_decoder_t *cabac,
                                       int left_coded,
                                       int top_coded)
 {
-    unsigned ctx_inc = 0;
+    unsigned ctx_inc = avc_cabac_ctx_coded_block_flag(left_coded, top_coded);
 
     /*
      * ISO/IEC 14496-10 9.3.3.1.1.9: coded_block_flag is present before
      * coefficient flags. Neighbor availability/category derivation happens in
      * the macroblock layer; this helper keeps the bin decode table-local.
      */
-    if (left_coded) {
-        ctx_inc++;
-    }
-    if (top_coded) {
-        ctx_inc += 2;
-    }
     if (ctx_base + ctx_inc >= AVC_CABAC_CONTEXTS) {
         cabac->error = 1;
         return 0;
@@ -1756,7 +1836,7 @@ int avc_cabac_decode_coded_block_flag(avc_cabac_decoder_t *cabac,
     return avc_cabac_decode_decision(cabac, ctx_base + ctx_inc);
 }
 
-static unsigned residual_ctx_idx_inc(unsigned ctx_block_cat,
+unsigned avc_cabac_ctx_residual_flag(unsigned ctx_block_cat,
                                      unsigned scan_index,
                                      unsigned max_coeff,
                                      int field_scan,
@@ -1819,7 +1899,7 @@ int avc_cabac_decode_significant_coeff_flag(avc_cabac_decoder_t *cabac,
         cabac->error = 1;
         return 0;
     }
-    ctx_inc = residual_ctx_idx_inc(ctx_block_cat, scan_index, max_coeff, field_scan, 0);
+    ctx_inc = avc_cabac_ctx_residual_flag(ctx_block_cat, scan_index, max_coeff, field_scan, 0);
     if (ctx_base + ctx_inc >= AVC_CABAC_CONTEXTS) {
         cabac->error = 1;
         return 0;
@@ -1840,7 +1920,7 @@ int avc_cabac_decode_last_significant_coeff_flag(avc_cabac_decoder_t *cabac,
         cabac->error = 1;
         return 0;
     }
-    ctx_inc = residual_ctx_idx_inc(ctx_block_cat, scan_index, max_coeff, field_scan, 1);
+    ctx_inc = avc_cabac_ctx_residual_flag(ctx_block_cat, scan_index, max_coeff, field_scan, 1);
     if (ctx_base + ctx_inc >= AVC_CABAC_CONTEXTS) {
         cabac->error = 1;
         return 0;

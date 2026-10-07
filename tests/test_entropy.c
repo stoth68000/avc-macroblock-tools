@@ -351,6 +351,17 @@ int main(void)
         avc_cabac_decoder_t cabac;
         unsigned value;
 
+        assert(avc_cabac_ctx_mb_qp_delta(0) == 60);
+        assert(avc_cabac_ctx_mb_qp_delta(1) == 61);
+        assert(avc_cabac_ctx_transform_size_8x8(0, 0) == 0);
+        assert(avc_cabac_ctx_transform_size_8x8(1, 0) == 1);
+        assert(avc_cabac_ctx_transform_size_8x8(0, 1) == 1);
+        assert(avc_cabac_ctx_transform_size_8x8(1, 1) == 2);
+        assert(avc_cabac_ctx_mb_field_decoding_flag(0, 1, 0, 1) == 0);
+        assert(avc_cabac_ctx_mb_field_decoding_flag(1, 1, 0, 1) == 1);
+        assert(avc_cabac_ctx_mb_field_decoding_flag(0, 1, 1, 1) == 1);
+        assert(avc_cabac_ctx_mb_field_decoding_flag(1, 1, 1, 1) == 2);
+
         avc_cabac_init(&cabac, data, sizeof(data));
         assert(!cabac.error);
         assert(avc_cabac_init_contexts(&cabac, 26, 0, AVC_SLICE_P));
@@ -377,6 +388,15 @@ int main(void)
         unsigned cbp_luma;
         unsigned cbp_chroma;
         unsigned mode;
+
+        assert(avc_cabac_ctx_coded_block_pattern_luma(0, 0, 0, 0, 0, 0) == 3);
+        assert(avc_cabac_ctx_coded_block_pattern_luma(1, 0, 0, 0, 0, 1) == 2);
+        assert(avc_cabac_ctx_coded_block_pattern_luma(2, 0, 0, 0, 0, 3) == 1);
+        assert(avc_cabac_ctx_coded_block_pattern_luma(3, 0, 0, 0, 0, 7) == 0);
+        assert(avc_cabac_ctx_coded_block_pattern_chroma(0, 0, 0, 0, 0) == 3);
+        assert(avc_cabac_ctx_coded_block_pattern_chroma(0, 1, 1, 1, 1) == 0);
+        assert(avc_cabac_ctx_coded_block_pattern_chroma(1, 0, 0, 0, 0) == 3);
+        assert(avc_cabac_ctx_coded_block_pattern_chroma(1, 1, 2, 1, 2) == 0);
 
         avc_cabac_init(&cabac, data, sizeof(data));
         assert(!cabac.error);
@@ -426,6 +446,25 @@ int main(void)
         unsigned sub_type;
         unsigned ref_idx;
         int16_t mvd;
+
+        assert(avc_cabac_ctx_ref_idx(0, 0) == 0);
+        assert(avc_cabac_ctx_ref_idx(1, 0) == 1);
+        assert(avc_cabac_ctx_ref_idx(0, 1) == 2);
+        assert(avc_cabac_ctx_ref_idx(1, 1) == 3);
+        assert(avc_cabac_ctx_mvd(0, 0) == 0);
+        assert(avc_cabac_ctx_mvd(2, 0) == 0);
+        assert(avc_cabac_ctx_mvd(2, 1) == 1);
+        assert(avc_cabac_ctx_mvd(33, 0) == 2);
+        assert(avc_cabac_ctx_coded_block_flag(0, 0) == 0);
+        assert(avc_cabac_ctx_coded_block_flag(1, 0) == 1);
+        assert(avc_cabac_ctx_coded_block_flag(0, 1) == 2);
+        assert(avc_cabac_ctx_coded_block_flag(1, 1) == 3);
+        assert(avc_cabac_ctx_residual_flag(0, 5, 16, 0, 0) == 5);
+        assert(avc_cabac_ctx_residual_flag(3, 0, 4, 0, 0) == 0);
+        assert(avc_cabac_ctx_residual_flag(3, 8, 16, 0, 0) == 2);
+        assert(avc_cabac_ctx_residual_flag(5, 22, 64, 0, 0) == 6);
+        assert(avc_cabac_ctx_residual_flag(5, 22, 64, 1, 0) == 12);
+        assert(avc_cabac_ctx_residual_flag(5, 62, 64, 0, 1) == 8);
 
         avc_cabac_init(&cabac, data, sizeof(data));
         assert(!cabac.error);
