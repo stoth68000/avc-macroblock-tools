@@ -47,6 +47,15 @@ typedef enum {
     AVC_CABAC_RESIDUAL_ERROR_INVALID_MAX_COEFF
 } avc_cabac_residual_error_t;
 
+typedef void (*avc_cabac_residual_trace_fn)(void *opaque,
+                                            const char *syntax,
+                                            unsigned ctx_idx,
+                                            int bin,
+                                            unsigned scan_index,
+                                            size_t bit_pos,
+                                            uint32_t cod_i_range,
+                                            uint32_t cod_i_offset);
+
 void avc_cabac_init(avc_cabac_decoder_t *cabac, const uint8_t *data, size_t size);
 int avc_cabac_init_contexts(avc_cabac_decoder_t *cabac, unsigned slice_qp_y,
                             unsigned cabac_init_idc, unsigned slice_type);
@@ -179,5 +188,19 @@ int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
                                     int top_coded,
                                     int field_scan,
                                     avc_cabac_residual_block_t *block);
+int avc_cabac_decode_residual_block_traced(avc_cabac_decoder_t *cabac,
+                                           unsigned max_coeff,
+                                           unsigned ctx_block_cat,
+                                           int coded_block_flag_present,
+                                           unsigned coded_ctx_base,
+                                           unsigned sig_ctx_base,
+                                           unsigned last_ctx_base,
+                                           unsigned level_ctx_base,
+                                           int left_coded,
+                                           int top_coded,
+                                           int field_scan,
+                                           avc_cabac_residual_block_t *block,
+                                           avc_cabac_residual_trace_fn on_trace,
+                                           void *trace_opaque);
 
 #endif

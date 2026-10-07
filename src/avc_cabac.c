@@ -2053,18 +2053,111 @@ int avc_cabac_decode_coeff_abs_level_minus1(avc_cabac_decoder_t *cabac,
     return avc_cabac_decode_coeff_abs_level_minus1_stateful(cabac, ctx_base, 0, 0, 0, value);
 }
 
-int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
-                                    unsigned max_coeff,
-                                    unsigned ctx_block_cat,
-                                    int coded_block_flag_present,
-                                    unsigned coded_ctx_base,
-                                    unsigned sig_ctx_base,
-                                    unsigned last_ctx_base,
-                                    unsigned level_ctx_base,
-                                    int left_coded,
-                                    int top_coded,
-                                    int field_scan,
-                                    avc_cabac_residual_block_t *block)
+static void cabac_residual_trace(avc_cabac_residual_trace_fn on_trace,
+                                 void *opaque,
+                                 const char *syntax,
+                                 unsigned ctx_idx,
+                                 int bin,
+                                 unsigned scan_index,
+                                 const avc_cabac_decoder_t *cabac)
+{
+    if (on_trace) {
+        on_trace(opaque, syntax, ctx_idx, bin, scan_index,
+                 cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
+    }
+}
+
+static int cabac_decode_coeff_abs_level_minus1_stateful_traced(
+    avc_cabac_decoder_t *cabac,
+    unsigned ctx_base,
+    unsigned ctx_block_cat,
+    unsigned num_abs_level_eq1,
+    unsigned num_abs_level_gt1,
+    unsigned scan_index,
+    unsigned *value,
+    avc_cabac_residual_trace_fn on_trace,
+    void *trace_opaque)
+{
+    unsigned prefix;
+    unsigned suffix = 0;
+    unsigned suffix_bits = 0;
+    unsigned first_ctx_inc;
+    unsigned rest_ctx_inc;
+    int bin;
+
+    first_ctx_inc = num_abs_level_gt1 ? 0u : 1u + (num_abs_level_eq1 > 3u ? 3u : num_abs_level_eq1);
+    rest_ctx_inc = ctx_block_cat == 3 ?
+        5u + (num_abs_level_gt1 > 3u ? 3u : num_abs_level_gt1) :
+        5u + (num_abs_level_gt1 > 4u ? 4u : num_abs_level_gt1);
+
+    if (ctx_base + rest_ctx_inc >= AVC_CABAC_CONTEXTS) {
+        cabac->error = 1;
+        return 0;
+    }
+
+    bin = avc_cabac_decode_decision(cabac, ctx_base + first_ctx_inc);
+    cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1",
+                         ctx_base + first_ctx_inc, bin, scan_index, cabac);
+    if (bin == 0) {
+        *value = 0;
+        return !cabac->error;
+    }
+
+    prefix = 1;
+    while (prefix < 14) {
+        bin = avc_cabac_decode_decision(cabac, ctx_base + rest_ctx_inc);
+        cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1",
+                             ctx_base + rest_ctx_inc, bin, scan_index, cabac);
+        if (cabac->error) {
+            return 0;
+        }
+        if (!bin) {
+            *value = prefix;
+            return 1;
+        }
+        prefix++;
+    }
+
+    if (prefix >= 14) {
+        do {
+            bin = avc_cabac_decode_bypass(cabac);
+            cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1_bypass",
+                                 UINT32_MAX, bin, scan_index, cabac);
+            if (!bin) {
+                break;
+            }
+            suffix_bits++;
+            if (suffix_bits > 24) {
+                cabac->error = 1;
+                return 0;
+            }
+        } while (1);
+        while (suffix_bits > 0) {
+            bin = avc_cabac_decode_bypass(cabac);
+            cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1_suffix",
+                                 UINT32_MAX, bin, scan_index, cabac);
+            suffix = (suffix << 1) | (unsigned)bin;
+            suffix_bits--;
+        }
+    }
+    *value = prefix + suffix;
+    return !cabac->error;
+}
+
+int avc_cabac_decode_residual_block_traced(avc_cabac_decoder_t *cabac,
+                                           unsigned max_coeff,
+                                           unsigned ctx_block_cat,
+                                           int coded_block_flag_present,
+                                           unsigned coded_ctx_base,
+                                           unsigned sig_ctx_base,
+                                           unsigned last_ctx_base,
+                                           unsigned level_ctx_base,
+                                           int left_coded,
+                                           int top_coded,
+                                           int field_scan,
+                                           avc_cabac_residual_block_t *block,
+                                           avc_cabac_residual_trace_fn on_trace,
+                                           void *trace_opaque)
 {
     unsigned i;
     unsigned coeff_count = 0;
@@ -2083,12 +2176,21 @@ int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
     block->coded_block_flag = coded_block_flag_present ? 0u : 1u;
 
     if (coded_block_flag_present) {
-        int coded_block_flag =
-            avc_cabac_decode_coded_block_flag(cabac, coded_ctx_base, left_coded, top_coded);
+        unsigned ctx_idx = coded_ctx_base + avc_cabac_ctx_coded_block_flag(left_coded, top_coded);
+        int coded_block_flag;
+        if (ctx_idx >= AVC_CABAC_CONTEXTS) {
+            cabac->error = 1;
+            block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_CODED_BLOCK_FLAG;
+            block->error_context = ctx_idx;
+            return 0;
+        }
+        coded_block_flag = avc_cabac_decode_decision(cabac, ctx_idx);
+        cabac_residual_trace(on_trace, trace_opaque, "coded_block_flag",
+                             ctx_idx, coded_block_flag, 0, cabac);
         if (!coded_block_flag) {
             if (cabac->error) {
                 block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_CODED_BLOCK_FLAG;
-                block->error_context = coded_ctx_base + avc_cabac_ctx_coded_block_flag(left_coded, top_coded);
+                block->error_context = ctx_idx;
                 return 0;
             }
             return 1;
@@ -2097,10 +2199,19 @@ int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
     }
 
     for (i = 0; i < max_coeff; i++) {
-        int significant = avc_cabac_decode_significant_coeff_flag(cabac, sig_ctx_base,
-                                                                  ctx_block_cat, i,
-                                                                  max_coeff,
-                                                                  field_scan);
+        unsigned sig_ctx_idx =
+            sig_ctx_base + avc_cabac_ctx_residual_flag(ctx_block_cat, i, max_coeff, field_scan, 0);
+        int significant;
+        if (sig_ctx_idx >= AVC_CABAC_CONTEXTS) {
+            cabac->error = 1;
+            block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_SIGNIFICANT_COEFF_FLAG;
+            block->error_index = i;
+            block->error_context = sig_ctx_idx;
+            return 0;
+        }
+        significant = avc_cabac_decode_decision(cabac, sig_ctx_idx);
+        cabac_residual_trace(on_trace, trace_opaque, "significant_coeff_flag",
+                             sig_ctx_idx, significant, i, cabac);
         if (cabac->error) {
             block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_SIGNIFICANT_COEFF_FLAG;
             block->error_index = i;
@@ -2110,10 +2221,19 @@ int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
         }
         block->significant[i] = (uint8_t)significant;
         if (significant) {
-            int last = avc_cabac_decode_last_significant_coeff_flag(cabac, last_ctx_base,
-                                                                    ctx_block_cat, i,
-                                                                    max_coeff,
-                                                                    field_scan);
+            unsigned last_ctx_idx =
+                last_ctx_base + avc_cabac_ctx_residual_flag(ctx_block_cat, i, max_coeff, field_scan, 1);
+            int last;
+            if (last_ctx_idx >= AVC_CABAC_CONTEXTS) {
+                cabac->error = 1;
+                block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_LAST_SIGNIFICANT_COEFF_FLAG;
+                block->error_index = i;
+                block->error_context = last_ctx_idx;
+                return 0;
+            }
+            last = avc_cabac_decode_decision(cabac, last_ctx_idx);
+            cabac_residual_trace(on_trace, trace_opaque, "last_significant_coeff_flag",
+                                 last_ctx_idx, last, i, cabac);
             if (cabac->error) {
                 block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_LAST_SIGNIFICANT_COEFF_FLAG;
                 block->error_index = i;
@@ -2146,17 +2266,22 @@ int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
             block->error_index = max_coeff;
             return 0;
         }
-        if (!avc_cabac_decode_coeff_abs_level_minus1_stateful(cabac, level_ctx_base,
-                                                              ctx_block_cat,
-                                                              num_abs_level_eq1,
-                                                              num_abs_level_gt1,
-                                                              &abs_minus1)) {
+        if (!cabac_decode_coeff_abs_level_minus1_stateful_traced(cabac, level_ctx_base,
+                                                                 ctx_block_cat,
+                                                                 num_abs_level_eq1,
+                                                                 num_abs_level_gt1,
+                                                                 scan,
+                                                                 &abs_minus1,
+                                                                 on_trace,
+                                                                 trace_opaque)) {
             block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_COEFF_ABS_LEVEL_MINUS1;
             block->error_index = scan;
             block->error_context = level_ctx_base;
             return 0;
         }
         sign = avc_cabac_decode_bypass(cabac) ? -1 : 1;
+        cabac_residual_trace(on_trace, trace_opaque, "coeff_sign_flag",
+                             UINT32_MAX, sign < 0, scan, cabac);
         if (cabac->error) {
             block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_COEFF_SIGN_FLAG;
             block->error_index = scan;
@@ -2177,4 +2302,30 @@ int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
         }
     }
     return !cabac->error;
+}
+
+int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
+                                    unsigned max_coeff,
+                                    unsigned ctx_block_cat,
+                                    int coded_block_flag_present,
+                                    unsigned coded_ctx_base,
+                                    unsigned sig_ctx_base,
+                                    unsigned last_ctx_base,
+                                    unsigned level_ctx_base,
+                                    int left_coded,
+                                    int top_coded,
+                                    int field_scan,
+                                    avc_cabac_residual_block_t *block)
+{
+    return avc_cabac_decode_residual_block_traced(cabac, max_coeff,
+                                                  ctx_block_cat,
+                                                  coded_block_flag_present,
+                                                  coded_ctx_base,
+                                                  sig_ctx_base,
+                                                  last_ctx_base,
+                                                  level_ctx_base,
+                                                  left_coded, top_coded,
+                                                  field_scan,
+                                                  block,
+                                                  NULL, NULL);
 }

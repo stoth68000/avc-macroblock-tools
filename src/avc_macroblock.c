@@ -157,6 +157,14 @@ typedef struct {
     uint32_t mb_addr;
 } avc_mb_qp_delta_trace_context_t;
 
+typedef struct {
+    avc_macroblock_callbacks_t callbacks;
+    void *opaque;
+    uint32_t mb_addr;
+    const char *kind_name;
+    unsigned block_index;
+} avc_residual_trace_context_t;
+
 static void trace_mb_qp_delta_bin(void *opaque,
                                   unsigned prefix,
                                   unsigned ctx_idx,
@@ -196,6 +204,36 @@ static int decode_mb_qp_delta_with_trace(avc_cabac_decoder_t *cabac,
                                                mb_qp_delta,
                                                trace_mb_qp_delta_bin,
                                                &context);
+}
+
+static void trace_residual_bin(void *opaque,
+                               const char *syntax,
+                               unsigned ctx_idx,
+                               int bin,
+                               unsigned scan_index,
+                               size_t bit_pos,
+                               uint32_t cod_i_range,
+                               uint32_t cod_i_offset)
+{
+    avc_residual_trace_context_t *context =
+        (avc_residual_trace_context_t *)opaque;
+    const char *ctx_label;
+    char ctx_buf[16];
+
+    if (!context || !trace_mb_enabled(context->callbacks, context->mb_addr)) {
+        return;
+    }
+    if (ctx_idx == UINT32_MAX) {
+        ctx_label = "bypass";
+    } else {
+        snprintf(ctx_buf, sizeof(ctx_buf), "%u", ctx_idx);
+        ctx_label = ctx_buf;
+    }
+    trace_mb(context->callbacks, context->opaque, context->mb_addr,
+             "CABAC trace mb=%u residual kind=%s block=%u syntax=%s scan=%u ctx=%s bin=%d bit=%zu range=%u offset=%u",
+             context->mb_addr, context->kind_name, context->block_index,
+             syntax, scan_index, ctx_label, bin, bit_pos,
+             cod_i_range, cod_i_offset);
 }
 
 static const char *p_mb_shape_name(avc_p_mb_shape_t shape)
@@ -2162,6 +2200,7 @@ static int cabac_emit_residual_block(avc_cabac_decoder_t *cabac,
     avc_residual_event_t residual;
     unsigned max_coeff;
     int coded_block_flag_present;
+    avc_residual_trace_context_t trace_context;
 
     if (!plan) {
         cabac->error = 1;
@@ -2182,17 +2221,26 @@ static int cabac_emit_residual_block(avc_cabac_decoder_t *cabac,
              coded_block_flag_present, left_coded, top_coded,
              cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
 
-    if (!avc_cabac_decode_residual_block(cabac, max_coeff,
-                                         plan->ctx_block_cat,
-                                         coded_block_flag_present,
-                                         plan->coded_ctx_base,
-                                         plan->sig_ctx_base,
-                                         plan->last_ctx_base,
-                                         plan->level_ctx_base,
-                                         left_coded, top_coded,
-                                         scan_mode == AVC_CAVLC_SCAN_FIELD ||
-                                             scan_mode == AVC_CAVLC_SCAN_TRANSFORM_BYPASS_FIELD,
-                                         &residual.cabac_block)) {
+    trace_context.callbacks = callbacks;
+    trace_context.opaque = opaque;
+    trace_context.mb_addr = mb_addr;
+    trace_context.kind_name = residual_kind_name(kind);
+    trace_context.block_index = block_index;
+
+    if (!avc_cabac_decode_residual_block_traced(
+            cabac, max_coeff,
+            plan->ctx_block_cat,
+            coded_block_flag_present,
+            plan->coded_ctx_base,
+            plan->sig_ctx_base,
+            plan->last_ctx_base,
+            plan->level_ctx_base,
+            left_coded, top_coded,
+            scan_mode == AVC_CAVLC_SCAN_FIELD ||
+                scan_mode == AVC_CAVLC_SCAN_TRANSFORM_BYPASS_FIELD,
+            &residual.cabac_block,
+            trace_mb_enabled(callbacks, mb_addr) ? trace_residual_bin : NULL,
+            &trace_context)) {
         notef(callbacks, opaque,
               "CABAC residual parse failed syntax=%s mb=%u kind=%u block=%u max_coeff=%u index=%u ctx=%u bit=%zu",
               cabac_residual_error_name(residual.cabac_block.error_syntax),
