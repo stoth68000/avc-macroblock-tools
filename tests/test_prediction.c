@@ -77,6 +77,32 @@ static void assert_p_skip_mv(avc_mv_predictor_candidate_t a,
     assert(mv[1] == expected_y);
 }
 
+static avc_direct_spatial_candidate_t direct_candidate(int available,
+                                                       unsigned list_mask,
+                                                       unsigned ref_l0,
+                                                       unsigned ref_l1)
+{
+    avc_direct_spatial_candidate_t c;
+    c.available = available;
+    c.list_mask = (uint8_t)list_mask;
+    c.ref_idx_l0 = ref_l0;
+    c.ref_idx_l1 = ref_l1;
+    return c;
+}
+
+static void assert_direct_ref(avc_direct_spatial_candidate_t a,
+                              avc_direct_spatial_candidate_t b,
+                              avc_direct_spatial_candidate_t c,
+                              unsigned list_bit,
+                              int expected_have,
+                              unsigned expected_ref)
+{
+    unsigned ref = 999;
+    int have = avc_mb_direct_spatial_ref_idx(a, b, c, list_bit, &ref);
+    assert(have == expected_have);
+    assert(ref == expected_ref);
+}
+
 int main(void)
 {
     {
@@ -257,6 +283,26 @@ int main(void)
                          candidate(1, 40, 10),
                          candidate(0, 20, 20),
                          10, 10);
+    }
+
+    {
+        avc_direct_spatial_candidate_t a = direct_candidate(1, 3, 2, 4);
+        avc_direct_spatial_candidate_t b = direct_candidate(1, 1, 1, 0);
+        avc_direct_spatial_candidate_t c = direct_candidate(1, 2, 0, 3);
+
+        assert_direct_ref(a, b, c, 1, 1, 1);
+        assert_direct_ref(a, b, c, 2, 1, 3);
+        assert_direct_ref(direct_candidate(0, 3, 0, 0), b, c, 1, 1, 1);
+        assert_direct_ref(direct_candidate(0, 3, 0, 0),
+                          direct_candidate(1, 2, 7, 2),
+                          direct_candidate(0, 1, 1, 8),
+                          1, 0, 0);
+        assert_direct_ref(direct_candidate(1, 1, 0, 9),
+                          direct_candidate(1, 1, 3, 7),
+                          direct_candidate(1, 1, 2, 5),
+                          2, 0, 0);
+        assert_direct_ref(a, b, c, 3, 0, 999);
+        assert(!avc_mb_direct_spatial_ref_idx(a, b, c, 1, 0));
     }
 
     return 0;

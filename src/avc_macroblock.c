@@ -1029,31 +1029,6 @@ static int candidate_mv_l1(avc_mv_candidate_t candidate, unsigned ref_idx, int16
     return 1;
 }
 
-static unsigned candidate_ref_for_list(avc_mv_candidate_t candidate, unsigned list_bit)
-{
-    if (list_bit == 1u) {
-        return candidate_ref_idx_l0(candidate);
-    }
-    return candidate_ref_idx_l1(candidate);
-}
-
-static unsigned min_direct_ref(unsigned best, int *have, avc_mv_candidate_t candidate,
-                               unsigned list_bit)
-{
-    unsigned ref_idx;
-
-    if (!candidate.available ||
-        (candidate.pred->list_mask[candidate.partition] & list_bit) == 0) {
-        return best;
-    }
-    ref_idx = candidate_ref_for_list(candidate, list_bit);
-    if (!*have || ref_idx < best) {
-        best = ref_idx;
-        *have = 1;
-    }
-    return best;
-}
-
 static void geometry_candidates(const avc_mb_pred_event_t *pred,
                                 unsigned partition,
                                 const avc_mb_state_t *left,
@@ -1073,6 +1048,19 @@ static void geometry_candidates(const avc_mb_pred_event_t *pred,
         candidate_c = mv_candidate_d(pred, partition, left, top, top_left);
     }
     *c = candidate_c;
+}
+
+static avc_direct_spatial_candidate_t direct_candidate(avc_mv_candidate_t candidate)
+{
+    if (!candidate.available) {
+        return (avc_direct_spatial_candidate_t){0};
+    }
+    return (avc_direct_spatial_candidate_t){
+        1,
+        candidate.pred->list_mask[candidate.partition],
+        candidate.pred->ref_idx_l0[candidate.partition],
+        candidate.pred->ref_idx_l1[candidate.partition]
+    };
 }
 
 static void derive_partition_mv_l0(avc_mb_pred_event_t *pred,
@@ -1233,15 +1221,16 @@ static unsigned direct_spatial_ref_idx_geometry(const avc_mb_pred_event_t *pred,
     avc_mv_candidate_t cand_a;
     avc_mv_candidate_t cand_b;
     avc_mv_candidate_t cand_c;
-    unsigned best = 0;
-    int have = 0;
+    unsigned ref_idx = 0;
 
     geometry_candidates(pred, partition, left, top, top_right, top_left,
                         &cand_a, &cand_b, &cand_c);
-    best = min_direct_ref(best, &have, cand_a, list_bit);
-    best = min_direct_ref(best, &have, cand_b, list_bit);
-    best = min_direct_ref(best, &have, cand_c, list_bit);
-    return best;
+    avc_mb_direct_spatial_ref_idx(direct_candidate(cand_a),
+                                  direct_candidate(cand_b),
+                                  direct_candidate(cand_c),
+                                  list_bit,
+                                  &ref_idx);
+    return ref_idx;
 }
 
 static void derive_direct_partition_geometry(avc_mb_pred_event_t *pred,

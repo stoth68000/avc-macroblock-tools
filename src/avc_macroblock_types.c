@@ -201,6 +201,42 @@ void avc_mb_derive_p_skip_mv(avc_mv_predictor_candidate_t a,
     avc_mb_predict_mv(0, 16, 16, a, b, c, mv);
 }
 
+int avc_mb_direct_spatial_ref_idx(avc_direct_spatial_candidate_t a,
+                                  avc_direct_spatial_candidate_t b,
+                                  avc_direct_spatial_candidate_t c,
+                                  unsigned list_bit,
+                                  unsigned *ref_idx)
+{
+    avc_direct_spatial_candidate_t candidates[3];
+    unsigned i;
+    unsigned best = 0;
+    int have = 0;
+
+    if (!ref_idx || (list_bit != 1u && list_bit != 2u)) {
+        return 0;
+    }
+    *ref_idx = 0;
+    candidates[0] = a;
+    candidates[1] = b;
+    candidates[2] = c;
+    for (i = 0; i < 3; i++) {
+        unsigned candidate_ref;
+        if (!candidates[i].available || (candidates[i].list_mask & list_bit) == 0) {
+            continue;
+        }
+        candidate_ref = list_bit == 1u ? candidates[i].ref_idx_l0 :
+                                         candidates[i].ref_idx_l1;
+        if (!have || candidate_ref < best) {
+            best = candidate_ref;
+            have = 1;
+        }
+    }
+    if (have) {
+        *ref_idx = best;
+    }
+    return have;
+}
+
 avc_i_mb_type_info_t avc_i_mb_type_classify(uint32_t mb_type)
 {
     avc_i_mb_type_info_t info;
