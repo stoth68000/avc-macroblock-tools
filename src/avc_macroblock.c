@@ -186,6 +186,12 @@ typedef struct {
     unsigned block_index;
 } avc_residual_trace_context_t;
 
+typedef struct {
+    avc_macroblock_callbacks_t callbacks;
+    void *opaque;
+    uint32_t mb_addr;
+} avc_cbp_trace_context_t;
+
 static void trace_mb_qp_delta_bin(void *opaque,
                                   unsigned prefix,
                                   unsigned ctx_idx,
@@ -232,6 +238,9 @@ static void trace_residual_bin(void *opaque,
                                unsigned ctx_idx,
                                int bin,
                                unsigned scan_index,
+                               size_t before_bit_pos,
+                               uint32_t before_cod_i_range,
+                               uint32_t before_cod_i_offset,
                                size_t bit_pos,
                                uint32_t cod_i_range,
                                uint32_t cod_i_offset)
@@ -251,10 +260,35 @@ static void trace_residual_bin(void *opaque,
         ctx_label = ctx_buf;
     }
     trace_mb(context->callbacks, context->opaque, context->mb_addr,
-             "CABAC trace mb=%u residual kind=%s block=%u syntax=%s scan=%u ctx=%s bin=%d bit=%zu range=%u offset=%u",
+             "CABAC trace mb=%u residual kind=%s block=%u syntax=%s scan=%u ctx=%s bin=%d before_bit=%zu before_range=%u before_offset=%u bit=%zu range=%u offset=%u",
              context->mb_addr, context->kind_name, context->block_index,
-             syntax, scan_index, ctx_label, bin, bit_pos,
+             syntax, scan_index, ctx_label, bin,
+             before_bit_pos, before_cod_i_range, before_cod_i_offset, bit_pos,
              cod_i_range, cod_i_offset);
+}
+
+static void trace_cbp_bin(void *opaque,
+                          const char *syntax,
+                          unsigned bin_index,
+                          unsigned ctx_idx,
+                          int bin,
+                          unsigned partial_cbp,
+                          size_t before_bit_pos,
+                          uint32_t before_cod_i_range,
+                          uint32_t before_cod_i_offset,
+                          size_t bit_pos,
+                          uint32_t cod_i_range,
+                          uint32_t cod_i_offset)
+{
+    avc_cbp_trace_context_t *context = (avc_cbp_trace_context_t *)opaque;
+    if (!context || !trace_mb_enabled(context->callbacks, context->mb_addr)) {
+        return;
+    }
+    trace_mb(context->callbacks, context->opaque, context->mb_addr,
+             "CABAC trace mb=%u cbp syntax=%s bin_index=%u ctx=%u bin=%d partial=%u before_bit=%zu before_range=%u before_offset=%u bit=%zu range=%u offset=%u",
+             context->mb_addr, syntax, bin_index, ctx_idx, bin, partial_cbp,
+             before_bit_pos, before_cod_i_range, before_cod_i_offset,
+             bit_pos, cod_i_range, cod_i_offset);
 }
 
 static const char *p_mb_shape_name(avc_p_mb_shape_t shape)
@@ -273,6 +307,23 @@ static const char *p_mb_shape_name(avc_p_mb_shape_t shape)
     case AVC_P_MB_INTRA:
         return "P_Intra";
     case AVC_P_MB_UNKNOWN:
+    default:
+        return "unknown";
+    }
+}
+
+static const char *b_mb_shape_name(avc_b_mb_shape_t shape)
+{
+    switch (shape) {
+    case AVC_B_MB_DIRECT:
+        return "B_Direct";
+    case AVC_B_MB_INTER:
+        return "B_Inter";
+    case AVC_B_MB_8X8:
+        return "B_8x8";
+    case AVC_B_MB_INTRA:
+        return "B_Intra";
+    case AVC_B_MB_UNKNOWN:
     default:
         return "unknown";
     }
@@ -3634,6 +3685,11 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                      cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
             trace_cabac_phase(callbacks, opaque, mb_addr, "after_mb_type", &cabac);
         } else if (slice->slice_kind == AVC_SLICE_B) {
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u enter B mb_type left_available=%d left_direct=%d top_available=%d top_direct=%d bit=%zu range=%u offset=%u",
+                     mb_addr, left && left->available, state_is_b_direct(left),
+                     top && top->available, state_is_b_direct(top),
+                     cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
             if (!avc_cabac_decode_mb_type_b(&cabac,
                                             left && left->available,
                                             state_is_b_direct(left),
@@ -3651,6 +3707,12 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                      cabac.cod_i_range, cabac.cod_i_offset);
             trace_cabac_phase(callbacks, opaque, mb_addr, "after_mb_type", &cabac);
             b_info = avc_b_mb_type_classify(event.mb_type);
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u exit B mb_type value=%u shape=%s partitions=%u list0=%u list1=%u bit=%zu range=%u offset=%u",
+                     mb_addr, event.mb_type, b_mb_shape_name(b_info.shape),
+                     b_info.partition_count, b_info.list_mask[0],
+                     b_info.list_mask[1], cabac.bit_pos, cabac.cod_i_range,
+                     cabac.cod_i_offset);
             if (b_info.shape == AVC_B_MB_UNKNOWN) {
                 notef(callbacks, opaque,
                       "unsupported B-slice CABAC macroblock type mb=%u mb_type=%u bit=%zu",
@@ -4002,6 +4064,16 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
         } else if (b_info.shape == AVC_B_MB_DIRECT ||
                    b_info.shape == AVC_B_MB_INTER ||
                    b_info.shape == AVC_B_MB_8X8) {
+            avc_cbp_trace_context_t cbp_trace_context;
+            cbp_trace_context.callbacks = callbacks;
+            cbp_trace_context.opaque = opaque;
+            cbp_trace_context.mb_addr = mb_addr;
+
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u enter B mb_pred shape=%s partitions=%u bit=%zu range=%u offset=%u",
+                     mb_addr, b_mb_shape_name(b_info.shape),
+                     b_info.partition_count, cabac.bit_pos, cabac.cod_i_range,
+                     cabac.cod_i_offset);
             if (!cabac_parse_b_inter_mb_pred(&cabac, mb_addr, slice, b_info,
                                              left, top, top_right, top_left,
                                              callbacks, opaque,
@@ -4014,42 +4086,103 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
             debug_mb(callbacks, opaque, mb_addr,
                      "CABAC debug mb=%u after B mb_pred bit=%zu range=%u offset=%u",
                      mb_addr, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u exit B mb_pred bit=%zu range=%u offset=%u",
+                     mb_addr, cabac.bit_pos, cabac.cod_i_range,
+                     cabac.cod_i_offset);
             trace_cabac_phase(callbacks, opaque, mb_addr, "after_prediction", &cabac);
             pred_for_state = &pred_event;
-            if (!avc_cabac_decode_coded_block_pattern_luma(&cabac,
-                                                           left && left->available,
-                                                           left ? left->coded_block_pattern_luma : 0,
-                                                           top && top->available,
-                                                           top ? top->coded_block_pattern_luma : 0,
-                                                           &event.coded_block_pattern_luma)) {
+            {
+                int left_cbp_available = left && left->available;
+                int top_cbp_available = top && top->available;
+                unsigned left_cbp_luma = left ? left->coded_block_pattern_luma : 0;
+                unsigned top_cbp_luma = top ? top->coded_block_pattern_luma : 0;
+                if (!left_cbp_available) {
+                    left_cbp_available = 1;
+                    left_cbp_luma = 15u;
+                }
+                if (!top_cbp_available) {
+                    top_cbp_available = 1;
+                    top_cbp_luma = 15u;
+                }
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u enter B coded_block_pattern_luma left_available=%d left_cbp_luma=%u top_available=%d top_cbp_luma=%u bit=%zu range=%u offset=%u",
+                     mb_addr, left_cbp_available, left_cbp_luma,
+                     top_cbp_available, top_cbp_luma,
+                     cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            if (!avc_cabac_decode_coded_block_pattern_luma_traced(
+                    &cabac,
+                    left_cbp_available,
+                    left_cbp_luma,
+                    top_cbp_available,
+                    top_cbp_luma,
+                    &event.coded_block_pattern_luma,
+                    trace_mb_enabled(callbacks, mb_addr) ? trace_cbp_bin : NULL,
+                    &cbp_trace_context)) {
                 notef(callbacks, opaque,
                       "CABAC coded_block_pattern_luma decode failed mb=%u mb_type=%u bit=%zu",
                       mb_addr, event.mb_type, cabac.bit_pos);
                 free(states);
                 return 0;
             }
+            }
             debug_mb(callbacks, opaque, mb_addr,
                      "CABAC debug mb=%u after cbp_luma=%u bit=%zu range=%u offset=%u",
                      mb_addr, event.coded_block_pattern_luma, cabac.bit_pos,
                      cabac.cod_i_range, cabac.cod_i_offset);
-            if (!avc_cabac_decode_coded_block_pattern_chroma(&cabac,
-                                                             left && left->available,
-                                                             left ? left->coded_block_pattern_chroma : 0,
-                                                             top && top->available,
-                                                             top ? top->coded_block_pattern_chroma : 0,
-                                                             &event.coded_block_pattern_chroma)) {
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u exit B coded_block_pattern_luma value=%u bit=%zu range=%u offset=%u",
+                     mb_addr, event.coded_block_pattern_luma, cabac.bit_pos,
+                     cabac.cod_i_range, cabac.cod_i_offset);
+            {
+                int left_cbp_available = left && left->available;
+                int top_cbp_available = top && top->available;
+                unsigned left_cbp_chroma = left ? left->coded_block_pattern_chroma : 0;
+                unsigned top_cbp_chroma = top ? top->coded_block_pattern_chroma : 0;
+                if (!left_cbp_available) {
+                    left_cbp_available = 1;
+                    left_cbp_chroma = 2u;
+                }
+                if (!top_cbp_available) {
+                    top_cbp_available = 1;
+                    top_cbp_chroma = 2u;
+                }
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u enter B coded_block_pattern_chroma left_available=%d left_cbp_chroma=%u top_available=%d top_cbp_chroma=%u bit=%zu range=%u offset=%u",
+                     mb_addr, left_cbp_available, left_cbp_chroma,
+                     top_cbp_available, top_cbp_chroma,
+                     cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            if (!avc_cabac_decode_coded_block_pattern_chroma_traced(
+                    &cabac,
+                    left_cbp_available,
+                    left_cbp_chroma,
+                    top_cbp_available,
+                    top_cbp_chroma,
+                    &event.coded_block_pattern_chroma,
+                    trace_mb_enabled(callbacks, mb_addr) ? trace_cbp_bin : NULL,
+                    &cbp_trace_context)) {
                 notef(callbacks, opaque,
                       "CABAC coded_block_pattern_chroma decode failed mb=%u mb_type=%u bit=%zu",
                       mb_addr, event.mb_type, cabac.bit_pos);
                 free(states);
                 return 0;
             }
+            }
             debug_mb(callbacks, opaque, mb_addr,
                      "CABAC debug mb=%u after cbp_chroma=%u bit=%zu range=%u offset=%u",
                      mb_addr, event.coded_block_pattern_chroma, cabac.bit_pos,
                      cabac.cod_i_range, cabac.cod_i_offset);
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u exit B coded_block_pattern_chroma value=%u bit=%zu range=%u offset=%u",
+                     mb_addr, event.coded_block_pattern_chroma, cabac.bit_pos,
+                     cabac.cod_i_range, cabac.cod_i_offset);
             trace_cabac_phase(callbacks, opaque, mb_addr, "after_cbp", &cabac);
             if (inter_transform_size_8x8_flag_present(pps, sps, &event, &pred_event)) {
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u enter B transform_size_8x8_flag left=%d top=%d bit=%zu range=%u offset=%u",
+                         mb_addr, left ? left->transform_size_8x8_flag : 0,
+                         top ? top->transform_size_8x8_flag : 0,
+                         cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
                 event.transform_size_8x8_flag =
                     avc_cabac_decode_transform_size_8x8_flag(&cabac,
                                                              left ? left->transform_size_8x8_flag : 0,
@@ -4057,6 +4190,10 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 debug_mb(callbacks, opaque, mb_addr,
                          "CABAC debug mb=%u after transform_8x8=%d bit=%zu",
                          mb_addr, event.transform_size_8x8_flag, cabac.bit_pos);
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u exit B transform_size_8x8_flag value=%d bit=%zu range=%u offset=%u",
+                         mb_addr, event.transform_size_8x8_flag, cabac.bit_pos,
+                         cabac.cod_i_range, cabac.cod_i_offset);
                 if (cabac.error) {
                     notef(callbacks, opaque,
                           "CABAC transform_size_8x8_flag decode failed mb=%u bit=%zu",
@@ -4064,7 +4201,19 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                     free(states);
                     return 0;
                 }
+            } else {
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u B transform_size_8x8_flag not present transform_8x8_mode_flag=%u cbp_luma=%u",
+                         mb_addr, pps->transform_8x8_mode_flag,
+                         event.coded_block_pattern_luma);
             }
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u B mb_qp_delta_present=%d cbp_luma=%u cbp_chroma=%u prev_mb_qp_delta_nonzero=%d bit=%zu range=%u offset=%u",
+                     mb_addr,
+                     (event.coded_block_pattern_luma || event.coded_block_pattern_chroma) ? 1 : 0,
+                     event.coded_block_pattern_luma, event.coded_block_pattern_chroma,
+                     prev_mb_qp_delta_nonzero, cabac.bit_pos,
+                     cabac.cod_i_range, cabac.cod_i_offset);
             if (event.coded_block_pattern_luma || event.coded_block_pattern_chroma) {
                 if (!decode_mb_qp_delta_with_trace(&cabac, prev_mb_qp_delta_nonzero,
                                                    &event.mb_qp_delta,

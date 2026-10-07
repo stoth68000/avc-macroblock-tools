@@ -1549,6 +1549,18 @@ int avc_cabac_decode_coded_block_pattern_luma(avc_cabac_decoder_t *cabac,
                                               int top_available, unsigned top_cbp_luma,
                                               unsigned *coded_block_pattern_luma)
 {
+    return avc_cabac_decode_coded_block_pattern_luma_traced(
+        cabac, left_available, left_cbp_luma, top_available, top_cbp_luma,
+        coded_block_pattern_luma, NULL, NULL);
+}
+
+int avc_cabac_decode_coded_block_pattern_luma_traced(avc_cabac_decoder_t *cabac,
+                                                     int left_available, unsigned left_cbp_luma,
+                                                     int top_available, unsigned top_cbp_luma,
+                                                     unsigned *coded_block_pattern_luma,
+                                                     avc_cabac_cbp_trace_fn on_trace,
+                                                     void *trace_opaque)
+{
     unsigned i;
     unsigned cbp = 0;
 
@@ -1558,11 +1570,20 @@ int avc_cabac_decode_coded_block_pattern_luma(avc_cabac_decoder_t *cabac,
                                                                   top_available,
                                                                   top_cbp_luma,
                                                                   cbp);
-        int bin = avc_cabac_decode_decision(cabac, 73 + ctx_inc);
+        unsigned ctx_idx = 73 + ctx_inc;
+        size_t before_bit_pos = cabac->bit_pos;
+        uint32_t before_range = cabac->cod_i_range;
+        uint32_t before_offset = cabac->cod_i_offset;
+        int bin = avc_cabac_decode_decision(cabac, ctx_idx);
         if (cabac->error) {
             return 0;
         }
         cbp |= (unsigned)bin << i;
+        if (on_trace) {
+            on_trace(trace_opaque, "coded_block_pattern_luma", i, ctx_idx, bin, cbp,
+                     before_bit_pos, before_range, before_offset,
+                     cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
+        }
     }
     *coded_block_pattern_luma = cbp;
     return 1;
@@ -1573,16 +1594,41 @@ int avc_cabac_decode_coded_block_pattern_chroma(avc_cabac_decoder_t *cabac,
                                                 int top_available, unsigned top_cbp_chroma,
                                                 unsigned *coded_block_pattern_chroma)
 {
+    return avc_cabac_decode_coded_block_pattern_chroma_traced(
+        cabac, left_available, left_cbp_chroma, top_available, top_cbp_chroma,
+        coded_block_pattern_chroma, NULL, NULL);
+}
+
+int avc_cabac_decode_coded_block_pattern_chroma_traced(avc_cabac_decoder_t *cabac,
+                                                       int left_available, unsigned left_cbp_chroma,
+                                                       int top_available, unsigned top_cbp_chroma,
+                                                       unsigned *coded_block_pattern_chroma,
+                                                       avc_cabac_cbp_trace_fn on_trace,
+                                                       void *trace_opaque)
+{
     unsigned ctx_inc0;
     unsigned ctx_inc1;
+    unsigned ctx_idx;
+    size_t before_bit_pos;
+    uint32_t before_range;
+    uint32_t before_offset;
     unsigned value = 0;
     int bin;
 
     ctx_inc0 = avc_cabac_ctx_coded_block_pattern_chroma(0, left_available, left_cbp_chroma,
                                                         top_available, top_cbp_chroma);
-    bin = avc_cabac_decode_decision(cabac, 77 + ctx_inc0);
+    ctx_idx = 77 + ctx_inc0;
+    before_bit_pos = cabac->bit_pos;
+    before_range = cabac->cod_i_range;
+    before_offset = cabac->cod_i_offset;
+    bin = avc_cabac_decode_decision(cabac, ctx_idx);
     if (cabac->error) {
         return 0;
+    }
+    if (on_trace) {
+        on_trace(trace_opaque, "coded_block_pattern_chroma", 0, ctx_idx, bin, value,
+                 before_bit_pos, before_range, before_offset,
+                 cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
     }
     if (!bin) {
         *coded_block_pattern_chroma = 0;
@@ -1592,12 +1638,21 @@ int avc_cabac_decode_coded_block_pattern_chroma(avc_cabac_decoder_t *cabac,
     value = 1;
     ctx_inc1 = avc_cabac_ctx_coded_block_pattern_chroma(1, left_available, left_cbp_chroma,
                                                         top_available, top_cbp_chroma);
-    bin = avc_cabac_decode_decision(cabac, 81 + ctx_inc1);
+    ctx_idx = 81 + ctx_inc1;
+    before_bit_pos = cabac->bit_pos;
+    before_range = cabac->cod_i_range;
+    before_offset = cabac->cod_i_offset;
+    bin = avc_cabac_decode_decision(cabac, ctx_idx);
     if (cabac->error) {
         return 0;
     }
     if (bin) {
         value = 2;
+    }
+    if (on_trace) {
+        on_trace(trace_opaque, "coded_block_pattern_chroma", 1, ctx_idx, bin, value,
+                 before_bit_pos, before_range, before_offset,
+                 cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
     }
     *coded_block_pattern_chroma = value;
     return 1;
@@ -2002,10 +2057,9 @@ int avc_cabac_decode_coeff_abs_level_minus1_stateful(avc_cabac_decoder_t *cabac,
     unsigned first_ctx_inc;
     unsigned rest_ctx_inc;
 
+    (void)ctx_block_cat;
     first_ctx_inc = num_abs_level_gt1 ? 0u : 1u + (num_abs_level_eq1 > 3u ? 3u : num_abs_level_eq1);
-    rest_ctx_inc = ctx_block_cat == 3 ?
-        5u + (num_abs_level_gt1 > 3u ? 3u : num_abs_level_gt1) :
-        5u + (num_abs_level_gt1 > 4u ? 4u : num_abs_level_gt1);
+    rest_ctx_inc = 5u + (num_abs_level_gt1 > 4u ? 4u : num_abs_level_gt1);
 
     if (ctx_base + rest_ctx_inc >= AVC_CABAC_CONTEXTS) {
         cabac->error = 1;
@@ -2059,10 +2113,14 @@ static void cabac_residual_trace(avc_cabac_residual_trace_fn on_trace,
                                  unsigned ctx_idx,
                                  int bin,
                                  unsigned scan_index,
+                                 size_t before_bit_pos,
+                                 uint32_t before_cod_i_range,
+                                 uint32_t before_cod_i_offset,
                                  const avc_cabac_decoder_t *cabac)
 {
     if (on_trace) {
         on_trace(opaque, syntax, ctx_idx, bin, scan_index,
+                 before_bit_pos, before_cod_i_range, before_cod_i_offset,
                  cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
     }
 }
@@ -2085,19 +2143,24 @@ static int cabac_decode_coeff_abs_level_minus1_stateful_traced(
     unsigned rest_ctx_inc;
     int bin;
 
+    (void)ctx_block_cat;
     first_ctx_inc = num_abs_level_gt1 ? 0u : 1u + (num_abs_level_eq1 > 3u ? 3u : num_abs_level_eq1);
-    rest_ctx_inc = ctx_block_cat == 3 ?
-        5u + (num_abs_level_gt1 > 3u ? 3u : num_abs_level_gt1) :
-        5u + (num_abs_level_gt1 > 4u ? 4u : num_abs_level_gt1);
+    rest_ctx_inc = 5u + (num_abs_level_gt1 > 4u ? 4u : num_abs_level_gt1);
 
     if (ctx_base + rest_ctx_inc >= AVC_CABAC_CONTEXTS) {
         cabac->error = 1;
         return 0;
     }
 
-    bin = avc_cabac_decode_decision(cabac, ctx_base + first_ctx_inc);
-    cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1",
-                         ctx_base + first_ctx_inc, bin, scan_index, cabac);
+    {
+        size_t before_bit_pos = cabac->bit_pos;
+        uint32_t before_range = cabac->cod_i_range;
+        uint32_t before_offset = cabac->cod_i_offset;
+        bin = avc_cabac_decode_decision(cabac, ctx_base + first_ctx_inc);
+        cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1",
+                             ctx_base + first_ctx_inc, bin, scan_index,
+                             before_bit_pos, before_range, before_offset, cabac);
+    }
     if (bin == 0) {
         *value = 0;
         return !cabac->error;
@@ -2105,9 +2168,15 @@ static int cabac_decode_coeff_abs_level_minus1_stateful_traced(
 
     prefix = 1;
     while (prefix < 14) {
-        bin = avc_cabac_decode_decision(cabac, ctx_base + rest_ctx_inc);
-        cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1",
-                             ctx_base + rest_ctx_inc, bin, scan_index, cabac);
+        {
+            size_t before_bit_pos = cabac->bit_pos;
+            uint32_t before_range = cabac->cod_i_range;
+            uint32_t before_offset = cabac->cod_i_offset;
+            bin = avc_cabac_decode_decision(cabac, ctx_base + rest_ctx_inc);
+            cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1",
+                                 ctx_base + rest_ctx_inc, bin, scan_index,
+                                 before_bit_pos, before_range, before_offset, cabac);
+        }
         if (cabac->error) {
             return 0;
         }
@@ -2120,9 +2189,15 @@ static int cabac_decode_coeff_abs_level_minus1_stateful_traced(
 
     if (prefix >= 14) {
         do {
-            bin = avc_cabac_decode_bypass(cabac);
-            cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1_bypass",
-                                 UINT32_MAX, bin, scan_index, cabac);
+            {
+                size_t before_bit_pos = cabac->bit_pos;
+                uint32_t before_range = cabac->cod_i_range;
+                uint32_t before_offset = cabac->cod_i_offset;
+                bin = avc_cabac_decode_bypass(cabac);
+                cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1_bypass",
+                                     UINT32_MAX, bin, scan_index,
+                                     before_bit_pos, before_range, before_offset, cabac);
+            }
             if (!bin) {
                 break;
             }
@@ -2133,9 +2208,15 @@ static int cabac_decode_coeff_abs_level_minus1_stateful_traced(
             }
         } while (1);
         while (suffix_bits > 0) {
-            bin = avc_cabac_decode_bypass(cabac);
-            cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1_suffix",
-                                 UINT32_MAX, bin, scan_index, cabac);
+            {
+                size_t before_bit_pos = cabac->bit_pos;
+                uint32_t before_range = cabac->cod_i_range;
+                uint32_t before_offset = cabac->cod_i_offset;
+                bin = avc_cabac_decode_bypass(cabac);
+                cabac_residual_trace(on_trace, trace_opaque, "coeff_abs_level_minus1_suffix",
+                                     UINT32_MAX, bin, scan_index,
+                                     before_bit_pos, before_range, before_offset, cabac);
+            }
             suffix = (suffix << 1) | (unsigned)bin;
             suffix_bits--;
         }
@@ -2178,15 +2259,22 @@ int avc_cabac_decode_residual_block_traced(avc_cabac_decoder_t *cabac,
     if (coded_block_flag_present) {
         unsigned ctx_idx = coded_ctx_base + avc_cabac_ctx_coded_block_flag(left_coded, top_coded);
         int coded_block_flag;
+        size_t before_bit_pos;
+        uint32_t before_range;
+        uint32_t before_offset;
         if (ctx_idx >= AVC_CABAC_CONTEXTS) {
             cabac->error = 1;
             block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_CODED_BLOCK_FLAG;
             block->error_context = ctx_idx;
             return 0;
         }
+        before_bit_pos = cabac->bit_pos;
+        before_range = cabac->cod_i_range;
+        before_offset = cabac->cod_i_offset;
         coded_block_flag = avc_cabac_decode_decision(cabac, ctx_idx);
         cabac_residual_trace(on_trace, trace_opaque, "coded_block_flag",
-                             ctx_idx, coded_block_flag, 0, cabac);
+                             ctx_idx, coded_block_flag, 0,
+                             before_bit_pos, before_range, before_offset, cabac);
         if (!coded_block_flag) {
             if (cabac->error) {
                 block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_CODED_BLOCK_FLAG;
@@ -2198,10 +2286,13 @@ int avc_cabac_decode_residual_block_traced(avc_cabac_decoder_t *cabac,
         block->coded_block_flag = 1u;
     }
 
-    for (i = 0; i < max_coeff; i++) {
+    for (i = 0; i + 1 < max_coeff; i++) {
         unsigned sig_ctx_idx =
             sig_ctx_base + avc_cabac_ctx_residual_flag(ctx_block_cat, i, max_coeff, field_scan, 0);
         int significant;
+        size_t before_bit_pos;
+        uint32_t before_range;
+        uint32_t before_offset;
         if (sig_ctx_idx >= AVC_CABAC_CONTEXTS) {
             cabac->error = 1;
             block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_SIGNIFICANT_COEFF_FLAG;
@@ -2209,9 +2300,13 @@ int avc_cabac_decode_residual_block_traced(avc_cabac_decoder_t *cabac,
             block->error_context = sig_ctx_idx;
             return 0;
         }
+        before_bit_pos = cabac->bit_pos;
+        before_range = cabac->cod_i_range;
+        before_offset = cabac->cod_i_offset;
         significant = avc_cabac_decode_decision(cabac, sig_ctx_idx);
         cabac_residual_trace(on_trace, trace_opaque, "significant_coeff_flag",
-                             sig_ctx_idx, significant, i, cabac);
+                             sig_ctx_idx, significant, i,
+                             before_bit_pos, before_range, before_offset, cabac);
         if (cabac->error) {
             block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_SIGNIFICANT_COEFF_FLAG;
             block->error_index = i;
@@ -2224,6 +2319,9 @@ int avc_cabac_decode_residual_block_traced(avc_cabac_decoder_t *cabac,
             unsigned last_ctx_idx =
                 last_ctx_base + avc_cabac_ctx_residual_flag(ctx_block_cat, i, max_coeff, field_scan, 1);
             int last;
+            size_t last_before_bit_pos;
+            uint32_t last_before_range;
+            uint32_t last_before_offset;
             if (last_ctx_idx >= AVC_CABAC_CONTEXTS) {
                 cabac->error = 1;
                 block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_LAST_SIGNIFICANT_COEFF_FLAG;
@@ -2231,9 +2329,13 @@ int avc_cabac_decode_residual_block_traced(avc_cabac_decoder_t *cabac,
                 block->error_context = last_ctx_idx;
                 return 0;
             }
+            last_before_bit_pos = cabac->bit_pos;
+            last_before_range = cabac->cod_i_range;
+            last_before_offset = cabac->cod_i_offset;
             last = avc_cabac_decode_decision(cabac, last_ctx_idx);
             cabac_residual_trace(on_trace, trace_opaque, "last_significant_coeff_flag",
-                                 last_ctx_idx, last, i, cabac);
+                                 last_ctx_idx, last, i,
+                                 last_before_bit_pos, last_before_range, last_before_offset, cabac);
             if (cabac->error) {
                 block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_LAST_SIGNIFICANT_COEFF_FLAG;
                 block->error_index = i;
@@ -2247,6 +2349,11 @@ int avc_cabac_decode_residual_block_traced(avc_cabac_decoder_t *cabac,
                 break;
             }
         }
+    }
+    if (i + 1 == max_coeff) {
+        block->significant[max_coeff - 1] = 1u;
+        block->last_significant[max_coeff - 1] = 1u;
+        coeff_count++;
     }
 
     while (coeff_count > 0) {
@@ -2279,9 +2386,15 @@ int avc_cabac_decode_residual_block_traced(avc_cabac_decoder_t *cabac,
             block->error_context = level_ctx_base;
             return 0;
         }
-        sign = avc_cabac_decode_bypass(cabac) ? -1 : 1;
-        cabac_residual_trace(on_trace, trace_opaque, "coeff_sign_flag",
-                             UINT32_MAX, sign < 0, scan, cabac);
+        {
+            size_t before_bit_pos = cabac->bit_pos;
+            uint32_t before_range = cabac->cod_i_range;
+            uint32_t before_offset = cabac->cod_i_offset;
+            sign = avc_cabac_decode_bypass(cabac) ? -1 : 1;
+            cabac_residual_trace(on_trace, trace_opaque, "coeff_sign_flag",
+                                 UINT32_MAX, sign < 0, scan,
+                                 before_bit_pos, before_range, before_offset, cabac);
+        }
         if (cabac->error) {
             block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_COEFF_SIGN_FLAG;
             block->error_index = scan;

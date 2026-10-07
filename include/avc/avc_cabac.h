@@ -52,9 +52,25 @@ typedef void (*avc_cabac_residual_trace_fn)(void *opaque,
                                             unsigned ctx_idx,
                                             int bin,
                                             unsigned scan_index,
+                                            size_t before_bit_pos,
+                                            uint32_t before_cod_i_range,
+                                            uint32_t before_cod_i_offset,
                                             size_t bit_pos,
                                             uint32_t cod_i_range,
                                             uint32_t cod_i_offset);
+
+typedef void (*avc_cabac_cbp_trace_fn)(void *opaque,
+                                       const char *syntax,
+                                       unsigned bin_index,
+                                       unsigned ctx_idx,
+                                       int bin,
+                                       unsigned partial_cbp,
+                                       size_t before_bit_pos,
+                                       uint32_t before_cod_i_range,
+                                       uint32_t before_cod_i_offset,
+                                       size_t bit_pos,
+                                       uint32_t cod_i_range,
+                                       uint32_t cod_i_offset);
 
 void avc_cabac_init(avc_cabac_decoder_t *cabac, const uint8_t *data, size_t size);
 int avc_cabac_init_contexts(avc_cabac_decoder_t *cabac, unsigned slice_qp_y,
@@ -103,10 +119,22 @@ int avc_cabac_decode_coded_block_pattern_luma(avc_cabac_decoder_t *cabac,
                                               int left_available, unsigned left_cbp_luma,
                                               int top_available, unsigned top_cbp_luma,
                                               unsigned *coded_block_pattern_luma);
+int avc_cabac_decode_coded_block_pattern_luma_traced(avc_cabac_decoder_t *cabac,
+                                                     int left_available, unsigned left_cbp_luma,
+                                                     int top_available, unsigned top_cbp_luma,
+                                                     unsigned *coded_block_pattern_luma,
+                                                     avc_cabac_cbp_trace_fn on_trace,
+                                                     void *trace_opaque);
 int avc_cabac_decode_coded_block_pattern_chroma(avc_cabac_decoder_t *cabac,
                                                 int left_available, unsigned left_cbp_chroma,
                                                 int top_available, unsigned top_cbp_chroma,
                                                 unsigned *coded_block_pattern_chroma);
+int avc_cabac_decode_coded_block_pattern_chroma_traced(avc_cabac_decoder_t *cabac,
+                                                       int left_available, unsigned left_cbp_chroma,
+                                                       int top_available, unsigned top_cbp_chroma,
+                                                       unsigned *coded_block_pattern_chroma,
+                                                       avc_cabac_cbp_trace_fn on_trace,
+                                                       void *trace_opaque);
 int avc_cabac_decode_mb_qp_delta(avc_cabac_decoder_t *cabac,
                                  int previous_mb_qp_delta_nonzero,
                                  int *mb_qp_delta);
