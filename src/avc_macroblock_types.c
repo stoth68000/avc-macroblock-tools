@@ -265,6 +265,122 @@ int avc_mb_direct_temporal_unsupported(uint8_t direct_spatial_mv_pred_flag)
     return direct_spatial_mv_pred_flag == 0;
 }
 
+static unsigned abs_i16_public(int16_t value)
+{
+    return value < 0 ? (unsigned)(-value) : (unsigned)value;
+}
+
+static int context_candidate_at(const avc_mb_pred_event_t *pred,
+                                unsigned x,
+                                unsigned y,
+                                unsigned *partition)
+{
+    if (!pred || pred->kind != AVC_MB_PRED_INTER) {
+        return 0;
+    }
+    return avc_mb_pred_partition_at(pred, x, y, partition);
+}
+
+static int context_candidate_a(const avc_mb_pred_event_t *current,
+                               unsigned partition,
+                               const avc_mb_pred_event_t *left,
+                               const avc_mb_pred_event_t **source,
+                               unsigned *source_partition)
+{
+    int x;
+    int y;
+
+    if (!current || partition >= current->partition_count) {
+        return 0;
+    }
+    x = (int)current->partition_x[partition] - 1;
+    y = (int)current->partition_y[partition] + (int)current->partition_height[partition] - 1;
+    if (x >= 0) {
+        *source = current;
+        return context_candidate_at(current, (unsigned)x, (unsigned)y, source_partition);
+    }
+    if (y >= 0 && y < 16 && context_candidate_at(left, 15, (unsigned)y, source_partition)) {
+        *source = left;
+        return 1;
+    }
+    return 0;
+}
+
+static int context_candidate_b(const avc_mb_pred_event_t *current,
+                               unsigned partition,
+                               const avc_mb_pred_event_t *top,
+                               const avc_mb_pred_event_t **source,
+                               unsigned *source_partition)
+{
+    int x;
+    int y;
+
+    if (!current || partition >= current->partition_count) {
+        return 0;
+    }
+    x = (int)current->partition_x[partition];
+    y = (int)current->partition_y[partition] - 1;
+    if (y >= 0) {
+        *source = current;
+        return context_candidate_at(current, (unsigned)x, (unsigned)y, source_partition);
+    }
+    if (x >= 0 && x < 16 && context_candidate_at(top, (unsigned)x, 15, source_partition)) {
+        *source = top;
+        return 1;
+    }
+    return 0;
+}
+
+static void fill_l0_context_from_candidate(avc_p_inter_cabac_context_t *context,
+                                           int top,
+                                           const avc_mb_pred_event_t *source,
+                                           unsigned partition)
+{
+    if (!source || partition >= source->partition_count ||
+        (source->list_mask[partition] & 1u) == 0) {
+        return;
+    }
+    if (top) {
+        context->top_available = 1;
+        context->top_ref_idx_l0 = source->ref_idx_l0[partition];
+        context->top_abs_mvd_l0[0] = abs_i16_public(source->mvd_l0[partition][0]);
+        context->top_abs_mvd_l0[1] = abs_i16_public(source->mvd_l0[partition][1]);
+    } else {
+        context->left_available = 1;
+        context->left_ref_idx_l0 = source->ref_idx_l0[partition];
+        context->left_abs_mvd_l0[0] = abs_i16_public(source->mvd_l0[partition][0]);
+        context->left_abs_mvd_l0[1] = abs_i16_public(source->mvd_l0[partition][1]);
+    }
+}
+
+int avc_mb_p_inter_cabac_context_l0(const avc_mb_pred_event_t *current,
+                                    unsigned partition,
+                                    const avc_mb_pred_event_t *left,
+                                    const avc_mb_pred_event_t *top,
+                                    avc_p_inter_cabac_context_t *context)
+{
+    const avc_mb_pred_event_t *source = 0;
+    unsigned source_partition = 0;
+
+    if (!context) {
+        return 0;
+    }
+    *context = (avc_p_inter_cabac_context_t){0};
+    if (!current || current->kind != AVC_MB_PRED_INTER ||
+        partition >= current->partition_count) {
+        return 0;
+    }
+    if (context_candidate_a(current, partition, left, &source, &source_partition)) {
+        fill_l0_context_from_candidate(context, 0, source, source_partition);
+    }
+    source = 0;
+    source_partition = 0;
+    if (context_candidate_b(current, partition, top, &source, &source_partition)) {
+        fill_l0_context_from_candidate(context, 1, source, source_partition);
+    }
+    return 1;
+}
+
 avc_i_mb_type_info_t avc_i_mb_type_classify(uint32_t mb_type)
 {
     avc_i_mb_type_info_t info;

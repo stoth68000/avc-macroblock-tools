@@ -113,6 +113,15 @@ typedef struct {
     unsigned ref_idx_l1;
 } avc_direct_spatial_candidate_t;
 
+typedef struct {
+    int left_available;
+    int top_available;
+    unsigned left_ref_idx_l0;
+    unsigned top_ref_idx_l0;
+    unsigned left_abs_mvd_l0[2];
+    unsigned top_abs_mvd_l0[2];
+} avc_p_inter_cabac_context_t;
+
 typedef enum {
     AVC_RESIDUAL_LUMA_4X4 = 0,
     AVC_RESIDUAL_LUMA_8X8 = 1,
@@ -206,6 +215,11 @@ void avc_mb_derive_direct_spatial_mv(unsigned partition,
                                      int16_t mv_pred[2],
                                      int16_t mv[2]);
 int avc_mb_direct_temporal_unsupported(uint8_t direct_spatial_mv_pred_flag);
+int avc_mb_p_inter_cabac_context_l0(const avc_mb_pred_event_t *current,
+                                    unsigned partition,
+                                    const avc_mb_pred_event_t *left,
+                                    const avc_mb_pred_event_t *top,
+                                    avc_p_inter_cabac_context_t *context);
 int avc_parse_slice_data(const uint8_t *rbsp, size_t rbsp_size,
                          const avc_slice_header_t *slice,
                          const avc_parameter_sets_t *sets,

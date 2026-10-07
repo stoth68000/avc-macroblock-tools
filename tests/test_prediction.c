@@ -41,6 +41,26 @@ static avc_mb_pred_event_t make_inter_pred(void)
     return pred;
 }
 
+static void set_partition(avc_mb_pred_event_t *pred,
+                          unsigned partition,
+                          unsigned x,
+                          unsigned y,
+                          unsigned width,
+                          unsigned height,
+                          unsigned ref_idx,
+                          int16_t mvd_x,
+                          int16_t mvd_y)
+{
+    pred->partition_x[partition] = (uint8_t)x;
+    pred->partition_y[partition] = (uint8_t)y;
+    pred->partition_width[partition] = (uint8_t)width;
+    pred->partition_height[partition] = (uint8_t)height;
+    pred->list_mask[partition] = 1;
+    pred->ref_idx_l0[partition] = ref_idx;
+    pred->mvd_l0[partition][0] = mvd_x;
+    pred->mvd_l0[partition][1] = mvd_y;
+}
+
 static avc_mv_predictor_candidate_t candidate(int available, int16_t x, int16_t y)
 {
     avc_mv_predictor_candidate_t c;
@@ -233,6 +253,77 @@ int main(void)
         assert(avc_mb_pred_sub_partition_position(&pred, 0, 0, &x, &y, &width, &height));
         assert(x == 0 && y == 0 && width == 16 && height == 16);
         assert(!avc_mb_pred_sub_partition_position(&pred, 0, 1, &x, &y, &width, &height));
+    }
+
+    {
+        avc_mb_pred_event_t current = make_inter_pred();
+        avc_mb_pred_event_t left = make_inter_pred();
+        avc_mb_pred_event_t top = make_inter_pred();
+        avc_p_inter_cabac_context_t ctx;
+
+        current.partition_count = 1;
+        set_partition(&current, 0, 0, 0, 16, 16, 0, 0, 0);
+        left.partition_count = 1;
+        set_partition(&left, 0, 0, 0, 16, 16, 2, -7, 9);
+        top.partition_count = 1;
+        set_partition(&top, 0, 0, 0, 16, 16, 3, 11, -13);
+        assert(avc_mb_p_inter_cabac_context_l0(&current, 0, &left, &top, &ctx));
+        assert(ctx.left_available && ctx.top_available);
+        assert(ctx.left_ref_idx_l0 == 2);
+        assert(ctx.top_ref_idx_l0 == 3);
+        assert(ctx.left_abs_mvd_l0[0] == 7 && ctx.left_abs_mvd_l0[1] == 9);
+        assert(ctx.top_abs_mvd_l0[0] == 11 && ctx.top_abs_mvd_l0[1] == 13);
+    }
+
+    {
+        avc_mb_pred_event_t current = make_inter_pred();
+        avc_mb_pred_event_t top = make_inter_pred();
+        avc_p_inter_cabac_context_t ctx;
+
+        current.partition_count = 2;
+        set_partition(&current, 0, 0, 0, 16, 8, 4, 5, -6);
+        set_partition(&current, 1, 0, 8, 16, 8, 0, 0, 0);
+        top.partition_count = 1;
+        set_partition(&top, 0, 0, 0, 16, 16, 1, -3, -4);
+        assert(avc_mb_p_inter_cabac_context_l0(&current, 1, 0, &top, &ctx));
+        assert(!ctx.left_available);
+        assert(ctx.top_available);
+        assert(ctx.top_ref_idx_l0 == 4);
+        assert(ctx.top_abs_mvd_l0[0] == 5 && ctx.top_abs_mvd_l0[1] == 6);
+    }
+
+    {
+        avc_mb_pred_event_t current = make_inter_pred();
+        avc_mb_pred_event_t left = make_inter_pred();
+        avc_p_inter_cabac_context_t ctx;
+
+        current.partition_count = 2;
+        set_partition(&current, 0, 0, 0, 8, 16, 6, -8, 10);
+        set_partition(&current, 1, 8, 0, 8, 16, 0, 0, 0);
+        left.partition_count = 1;
+        set_partition(&left, 0, 0, 0, 16, 16, 1, 2, 3);
+        assert(avc_mb_p_inter_cabac_context_l0(&current, 1, &left, 0, &ctx));
+        assert(ctx.left_available);
+        assert(!ctx.top_available);
+        assert(ctx.left_ref_idx_l0 == 6);
+        assert(ctx.left_abs_mvd_l0[0] == 8 && ctx.left_abs_mvd_l0[1] == 10);
+    }
+
+    {
+        avc_mb_pred_event_t current = make_inter_pred();
+        avc_p_inter_cabac_context_t ctx;
+
+        current.partition_count = 4;
+        set_partition(&current, 0, 0, 0, 8, 8, 1, 1, 2);
+        set_partition(&current, 1, 8, 0, 8, 8, 2, -3, 4);
+        set_partition(&current, 2, 0, 8, 8, 8, 3, 5, -6);
+        set_partition(&current, 3, 8, 8, 8, 8, 4, -7, -8);
+        assert(avc_mb_p_inter_cabac_context_l0(&current, 3, 0, 0, &ctx));
+        assert(ctx.left_available && ctx.top_available);
+        assert(ctx.left_ref_idx_l0 == 3);
+        assert(ctx.top_ref_idx_l0 == 2);
+        assert(ctx.left_abs_mvd_l0[0] == 5 && ctx.left_abs_mvd_l0[1] == 6);
+        assert(ctx.top_abs_mvd_l0[0] == 3 && ctx.top_abs_mvd_l0[1] == 4);
     }
 
     {

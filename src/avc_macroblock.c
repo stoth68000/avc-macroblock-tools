@@ -751,6 +751,15 @@ static unsigned pred_abs_mvd_l0(const avc_mb_pred_event_t *pred,
     return abs_i16(pred->mvd_l0[partition][component]);
 }
 
+static const avc_mb_pred_event_t *state_pred_l0(const avc_mb_state_t *state)
+{
+    if (!state || !state->available || !state->has_pred ||
+        state->pred.kind != AVC_MB_PRED_INTER) {
+        return NULL;
+    }
+    return &state->pred;
+}
+
 static void sub_mvd_grid_store(avc_sub_mvd_grid_t *grid,
                                unsigned x,
                                unsigned y,
@@ -1446,6 +1455,9 @@ static int cabac_parse_p_inter_mb_pred(avc_cabac_decoder_t *cabac,
     if (shape == AVC_P_MB_8X8 || shape == AVC_P_MB_8X8REF0) {
         for (i = 0; i < 4; i++) {
             if (!avc_cabac_decode_sub_mb_type_p(cabac, &pred.sub_mb_type[i])) {
+                notef(callbacks, opaque,
+                      "CABAC P inter sub_mb_type decode failed mb=%u partition=%u bit=%zu",
+                      mb_addr, i, cabac->bit_pos);
                 return 0;
             }
         }
@@ -1472,6 +1484,14 @@ static int cabac_parse_p_inter_mb_pred(avc_cabac_decoder_t *cabac,
                                     neighbor_ref_idx_l0(top, top_partition);
             if (!avc_cabac_decode_ref_idx_l0(cabac, left_ref != 0, top_ref != 0,
                                              &pred.ref_idx_l0[i])) {
+                avc_p_inter_cabac_context_t spec_context;
+                avc_mb_p_inter_cabac_context_l0(&pred, i, state_pred_l0(left),
+                                                state_pred_l0(top), &spec_context);
+                notef(callbacks, opaque,
+                      "CABAC P inter ref_idx_l0 decode failed mb=%u partition=%u legacy_left_ref=%u legacy_top_ref=%u spec_left_ref=%u spec_top_ref=%u bit=%zu",
+                      mb_addr, i, left_ref, top_ref,
+                      spec_context.left_ref_idx_l0, spec_context.top_ref_idx_l0,
+                      cabac->bit_pos);
                 return 0;
             }
         }
@@ -1529,10 +1549,26 @@ static int cabac_parse_p_inter_mb_pred(avc_cabac_decoder_t *cabac,
 
             if (!avc_cabac_decode_mvd_component(cabac, 40, left_mvd_x, top_mvd_x,
                                                 &mvd[0])) {
+                avc_p_inter_cabac_context_t spec_context;
+                avc_mb_p_inter_cabac_context_l0(&pred, i, state_pred_l0(left),
+                                                state_pred_l0(top), &spec_context);
+                notef(callbacks, opaque,
+                      "CABAC P inter mvd_l0_x decode failed mb=%u partition=%u sub=%u legacy_left_abs=%u legacy_top_abs=%u spec_left_abs=%u spec_top_abs=%u bit=%zu",
+                      mb_addr, i, sub, left_mvd_x, top_mvd_x,
+                      spec_context.left_abs_mvd_l0[0], spec_context.top_abs_mvd_l0[0],
+                      cabac->bit_pos);
                 return 0;
             }
             if (!avc_cabac_decode_mvd_component(cabac, 47, left_mvd_y, top_mvd_y,
                                                 &mvd[1])) {
+                avc_p_inter_cabac_context_t spec_context;
+                avc_mb_p_inter_cabac_context_l0(&pred, i, state_pred_l0(left),
+                                                state_pred_l0(top), &spec_context);
+                notef(callbacks, opaque,
+                      "CABAC P inter mvd_l0_y decode failed mb=%u partition=%u sub=%u legacy_left_abs=%u legacy_top_abs=%u spec_left_abs=%u spec_top_abs=%u bit=%zu",
+                      mb_addr, i, sub, left_mvd_y, top_mvd_y,
+                      spec_context.left_abs_mvd_l0[1], spec_context.top_abs_mvd_l0[1],
+                      cabac->bit_pos);
                 return 0;
             }
             if (sub == 0) {
