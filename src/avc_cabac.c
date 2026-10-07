@@ -1479,6 +1479,33 @@ unsigned avc_cabac_ctx_coded_block_pattern_chroma(unsigned bin_idx,
     return ctx_inc;
 }
 
+static unsigned cabac_ctx_coded_block_pattern_chroma_b(unsigned bin_idx,
+                                                       int left_available,
+                                                       unsigned left_cbp_chroma,
+                                                       int top_available,
+                                                       unsigned top_cbp_chroma)
+{
+    unsigned ctx_inc = 0;
+
+    if (bin_idx == 0) {
+        if (left_available && left_cbp_chroma > 0) {
+            ctx_inc++;
+        }
+        if (top_available && top_cbp_chroma > 0) {
+            ctx_inc += 2;
+        }
+        return ctx_inc;
+    }
+
+    if (left_available && left_cbp_chroma == 2) {
+        ctx_inc++;
+    }
+    if (top_available && top_cbp_chroma == 2) {
+        ctx_inc += 2;
+    }
+    return ctx_inc;
+}
+
 unsigned avc_cabac_ctx_transform_size_8x8(int left_transform_8x8,
                                           int top_transform_8x8)
 {
@@ -1658,6 +1685,65 @@ int avc_cabac_decode_coded_block_pattern_chroma_traced(avc_cabac_decoder_t *caba
     return 1;
 }
 
+int avc_cabac_decode_coded_block_pattern_chroma_b_traced(avc_cabac_decoder_t *cabac,
+                                                         int left_available, unsigned left_cbp_chroma,
+                                                         int top_available, unsigned top_cbp_chroma,
+                                                         unsigned *coded_block_pattern_chroma,
+                                                         avc_cabac_cbp_trace_fn on_trace,
+                                                         void *trace_opaque)
+{
+    unsigned ctx_inc0;
+    unsigned ctx_inc1;
+    unsigned ctx_idx;
+    size_t before_bit_pos;
+    uint32_t before_range;
+    uint32_t before_offset;
+    unsigned value = 0;
+    int bin;
+
+    ctx_inc0 = cabac_ctx_coded_block_pattern_chroma_b(0, left_available, left_cbp_chroma,
+                                                      top_available, top_cbp_chroma);
+    ctx_idx = 77 + ctx_inc0;
+    before_bit_pos = cabac->bit_pos;
+    before_range = cabac->cod_i_range;
+    before_offset = cabac->cod_i_offset;
+    bin = avc_cabac_decode_decision(cabac, ctx_idx);
+    if (cabac->error) {
+        return 0;
+    }
+    if (on_trace) {
+        on_trace(trace_opaque, "coded_block_pattern_chroma", 0, ctx_idx, bin, value,
+                 before_bit_pos, before_range, before_offset,
+                 cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
+    }
+    if (!bin) {
+        *coded_block_pattern_chroma = 0;
+        return 1;
+    }
+
+    value = 1;
+    ctx_inc1 = cabac_ctx_coded_block_pattern_chroma_b(1, left_available, left_cbp_chroma,
+                                                      top_available, top_cbp_chroma);
+    ctx_idx = 81 + ctx_inc1;
+    before_bit_pos = cabac->bit_pos;
+    before_range = cabac->cod_i_range;
+    before_offset = cabac->cod_i_offset;
+    bin = avc_cabac_decode_decision(cabac, ctx_idx);
+    if (cabac->error) {
+        return 0;
+    }
+    if (bin) {
+        value = 2;
+    }
+    if (on_trace) {
+        on_trace(trace_opaque, "coded_block_pattern_chroma", 1, ctx_idx, bin, value,
+                 before_bit_pos, before_range, before_offset,
+                 cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
+    }
+    *coded_block_pattern_chroma = value;
+    return 1;
+}
+
 int avc_cabac_decode_transform_size_8x8_flag(avc_cabac_decoder_t *cabac,
                                              int left_transform_8x8,
                                              int top_transform_8x8)
@@ -1778,17 +1864,7 @@ int avc_cabac_decode_ref_idx_l0_bounded(avc_cabac_decoder_t *cabac,
     unsigned ctx_inc = 0;
     int bin;
 
-    /*
-     * The spec context helper is exposed and tested above, but the current
-     * macroblock parser still feeds simplified neighbor terms here. Keep the
-     * decode path behavior-preserving until neighbor derivation is audited.
-     */
-    if (left_nonzero) {
-        ctx_inc++;
-    }
-    if (top_nonzero) {
-        ctx_inc++;
-    }
+    ctx_inc = avc_cabac_ctx_ref_idx(left_nonzero, top_nonzero);
     bin = avc_cabac_decode_decision(cabac, 54 + ctx_inc);
     if (cabac->error) {
         return 0;
@@ -1803,8 +1879,9 @@ int avc_cabac_decode_ref_idx_l0_bounded(avc_cabac_decoder_t *cabac,
     }
 
     value = 1;
-    while (value < max_ref_idx) {
-        bin = avc_cabac_decode_decision(cabac, 58);
+    ctx_inc = (ctx_inc >> 2) + 4;
+    for (;;) {
+        bin = avc_cabac_decode_decision(cabac, 54 + ctx_inc);
         if (cabac->error) {
             return 0;
         }
@@ -1813,9 +1890,12 @@ int avc_cabac_decode_ref_idx_l0_bounded(avc_cabac_decoder_t *cabac,
             return 1;
         }
         value++;
+        if (value > max_ref_idx) {
+            cabac->error = 1;
+            return 0;
+        }
+        ctx_inc = (ctx_inc >> 2) + 4;
     }
-    *ref_idx = value;
-    return 1;
 }
 
 int avc_cabac_decode_ref_idx_l0(avc_cabac_decoder_t *cabac,
@@ -1858,7 +1938,8 @@ int avc_cabac_decode_mvd_component(avc_cabac_decoder_t *cabac,
 
     prefix = 1;
     while (prefix < 9) {
-        int bin = avc_cabac_decode_decision(cabac, ctx_base + 3 + (prefix > 1));
+        unsigned ctx_inc = prefix < 4 ? prefix - 1u : 3u;
+        int bin = avc_cabac_decode_decision(cabac, ctx_base + 3 + ctx_inc);
         if (cabac->error) {
             return 0;
         }

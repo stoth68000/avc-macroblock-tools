@@ -135,6 +135,12 @@ int avc_cabac_decode_coded_block_pattern_chroma_traced(avc_cabac_decoder_t *caba
                                                        unsigned *coded_block_pattern_chroma,
                                                        avc_cabac_cbp_trace_fn on_trace,
                                                        void *trace_opaque);
+int avc_cabac_decode_coded_block_pattern_chroma_b_traced(avc_cabac_decoder_t *cabac,
+                                                         int left_available, unsigned left_cbp_chroma,
+                                                         int top_available, unsigned top_cbp_chroma,
+                                                         unsigned *coded_block_pattern_chroma,
+                                                         avc_cabac_cbp_trace_fn on_trace,
+                                                         void *trace_opaque);
 int avc_cabac_decode_mb_qp_delta(avc_cabac_decoder_t *cabac,
                                  int previous_mb_qp_delta_nonzero,
                                  int *mb_qp_delta);

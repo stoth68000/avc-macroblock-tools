@@ -1342,6 +1342,23 @@ static unsigned candidate_ref_idx_l1(avc_mv_candidate_t candidate)
     return candidate.pred->ref_idx_l1[candidate.partition];
 }
 
+static int candidate_is_direct(avc_mv_candidate_t candidate)
+{
+    return candidate.available &&
+           candidate.partition < 4 &&
+           candidate.pred->direct_flag[candidate.partition];
+}
+
+static int candidate_ref_idx_l0_counts_for_b_context(avc_mv_candidate_t candidate)
+{
+    return candidate_ref_idx_l0(candidate) > 0 && !candidate_is_direct(candidate);
+}
+
+static int candidate_ref_idx_l1_counts_for_b_context(avc_mv_candidate_t candidate)
+{
+    return candidate_ref_idx_l1(candidate) > 0 && !candidate_is_direct(candidate);
+}
+
 static unsigned candidate_abs_mvd_l0(avc_mv_candidate_t candidate, unsigned component)
 {
     if (!candidate.available || component > 1 ||
@@ -2003,6 +2020,8 @@ static int cabac_parse_b_inter_mb_pred(avc_cabac_decoder_t *cabac,
             avc_mv_candidate_t cand_b;
             unsigned left_ref;
             unsigned top_ref;
+            int left_ctx_ref;
+            int top_ctx_ref;
 
             if ((pred.list_mask[i] & 1u) == 0) {
                 continue;
@@ -2011,11 +2030,21 @@ static int cabac_parse_b_inter_mb_pred(avc_cabac_decoder_t *cabac,
             cand_b = mv_candidate_b(&pred, i, top);
             left_ref = candidate_ref_idx_l0(cand_a);
             top_ref = candidate_ref_idx_l0(cand_b);
-            if (!avc_cabac_decode_ref_idx_l0_bounded(cabac, left_ref != 0, top_ref != 0,
+            left_ctx_ref = candidate_ref_idx_l0_counts_for_b_context(cand_a);
+            top_ctx_ref = candidate_ref_idx_l0_counts_for_b_context(cand_b);
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u enter B ref_idx_l0 partition=%u left_ref=%u top_ref=%u left_ctx=%d top_ctx=%d bit=%zu range=%u offset=%u",
+                     mb_addr, i, left_ref, top_ref, left_ctx_ref, top_ctx_ref, cabac->bit_pos,
+                     cabac->cod_i_range, cabac->cod_i_offset);
+            if (!avc_cabac_decode_ref_idx_l0_bounded(cabac, left_ctx_ref, top_ctx_ref,
                                                      slice->num_ref_idx_l0_active_minus1,
                                                      &pred.ref_idx_l0[i])) {
                 return 0;
             }
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u exit B ref_idx_l0 partition=%u value=%u bit=%zu range=%u offset=%u",
+                     mb_addr, i, pred.ref_idx_l0[i], cabac->bit_pos,
+                     cabac->cod_i_range, cabac->cod_i_offset);
         }
     }
     if (slice->num_ref_idx_l1_active_minus1 > 0) {
@@ -2024,6 +2053,8 @@ static int cabac_parse_b_inter_mb_pred(avc_cabac_decoder_t *cabac,
             avc_mv_candidate_t cand_b;
             unsigned left_ref;
             unsigned top_ref;
+            int left_ctx_ref;
+            int top_ctx_ref;
 
             if ((pred.list_mask[i] & 2u) == 0) {
                 continue;
@@ -2032,11 +2063,21 @@ static int cabac_parse_b_inter_mb_pred(avc_cabac_decoder_t *cabac,
             cand_b = mv_candidate_b(&pred, i, top);
             left_ref = candidate_ref_idx_l1(cand_a);
             top_ref = candidate_ref_idx_l1(cand_b);
-            if (!avc_cabac_decode_ref_idx_l1_bounded(cabac, left_ref != 0, top_ref != 0,
+            left_ctx_ref = candidate_ref_idx_l1_counts_for_b_context(cand_a);
+            top_ctx_ref = candidate_ref_idx_l1_counts_for_b_context(cand_b);
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u enter B ref_idx_l1 partition=%u left_ref=%u top_ref=%u left_ctx=%d top_ctx=%d bit=%zu range=%u offset=%u",
+                     mb_addr, i, left_ref, top_ref, left_ctx_ref, top_ctx_ref, cabac->bit_pos,
+                     cabac->cod_i_range, cabac->cod_i_offset);
+            if (!avc_cabac_decode_ref_idx_l1_bounded(cabac, left_ctx_ref, top_ctx_ref,
                                                      slice->num_ref_idx_l1_active_minus1,
                                                      &pred.ref_idx_l1[i])) {
                 return 0;
             }
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u exit B ref_idx_l1 partition=%u value=%u bit=%zu range=%u offset=%u",
+                     mb_addr, i, pred.ref_idx_l1[i], cabac->bit_pos,
+                     cabac->cod_i_range, cabac->cod_i_offset);
         }
     }
 
@@ -2076,10 +2117,18 @@ static int cabac_parse_b_inter_mb_pred(avc_cabac_decoder_t *cabac,
                     top_x = sub_mvd_grid_abs_at(&l0_grid, sub_x, sub_y - 1u, 0, &have_grid_top);
                     top_y = sub_mvd_grid_abs_at(&l0_grid, sub_x, sub_y - 1u, 1, &have_grid_top);
                 }
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u enter B mvd list=0 partition=%u sub=%u left=(%u,%u) top=(%u,%u) bit=%zu range=%u offset=%u",
+                         mb_addr, i, sub, left_x, left_y, top_x, top_y,
+                         cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
                 if (!avc_cabac_decode_mvd_component(cabac, 40, left_x, top_x, &mvd[0]) ||
                     !avc_cabac_decode_mvd_component(cabac, 47, left_y, top_y, &mvd[1])) {
                     return 0;
                 }
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u exit B mvd list=0 partition=%u sub=%u value=(%d,%d) bit=%zu range=%u offset=%u",
+                         mb_addr, i, sub, mvd[0], mvd[1],
+                         cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
                 if (sub == 0) {
                     pred.mvd_l0[i][0] = mvd[0];
                     pred.mvd_l0[i][1] = mvd[1];
@@ -2115,10 +2164,18 @@ static int cabac_parse_b_inter_mb_pred(avc_cabac_decoder_t *cabac,
                     top_x = sub_mvd_grid_abs_at(&l1_grid, sub_x, sub_y - 1u, 0, &have_grid_top);
                     top_y = sub_mvd_grid_abs_at(&l1_grid, sub_x, sub_y - 1u, 1, &have_grid_top);
                 }
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u enter B mvd list=1 partition=%u sub=%u left=(%u,%u) top=(%u,%u) bit=%zu range=%u offset=%u",
+                         mb_addr, i, sub, left_x, left_y, top_x, top_y,
+                         cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
                 if (!avc_cabac_decode_mvd_component(cabac, 40, left_x, top_x, &mvd[0]) ||
                     !avc_cabac_decode_mvd_component(cabac, 47, left_y, top_y, &mvd[1])) {
                     return 0;
                 }
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u exit B mvd list=1 partition=%u sub=%u value=(%d,%d) bit=%zu range=%u offset=%u",
+                         mb_addr, i, sub, mvd[0], mvd[1],
+                         cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
                 if (sub == 0) {
                     pred.mvd_l1[i][0] = mvd[0];
                     pred.mvd_l1[i][1] = mvd[1];
@@ -4139,20 +4196,12 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 int top_cbp_available = top && top->available;
                 unsigned left_cbp_chroma = left ? left->coded_block_pattern_chroma : 0;
                 unsigned top_cbp_chroma = top ? top->coded_block_pattern_chroma : 0;
-                if (!left_cbp_available) {
-                    left_cbp_available = 1;
-                    left_cbp_chroma = 2u;
-                }
-                if (!top_cbp_available) {
-                    top_cbp_available = 1;
-                    top_cbp_chroma = 2u;
-                }
             trace_mb(callbacks, opaque, mb_addr,
                      "CABAC trace mb=%u enter B coded_block_pattern_chroma left_available=%d left_cbp_chroma=%u top_available=%d top_cbp_chroma=%u bit=%zu range=%u offset=%u",
                      mb_addr, left_cbp_available, left_cbp_chroma,
                      top_cbp_available, top_cbp_chroma,
                      cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
-            if (!avc_cabac_decode_coded_block_pattern_chroma_traced(
+            if (!avc_cabac_decode_coded_block_pattern_chroma_b_traced(
                     &cabac,
                     left_cbp_available,
                     left_cbp_chroma,
