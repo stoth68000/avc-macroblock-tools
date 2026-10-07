@@ -237,6 +237,29 @@ int avc_mb_direct_spatial_ref_idx(avc_direct_spatial_candidate_t a,
     return have;
 }
 
+void avc_mb_derive_direct_spatial_mv(unsigned partition,
+                                     unsigned partition_width,
+                                     unsigned partition_height,
+                                     avc_mv_predictor_candidate_t a,
+                                     avc_mv_predictor_candidate_t b,
+                                     avc_mv_predictor_candidate_t c,
+                                     int16_t mv_pred[2],
+                                     int16_t mv[2])
+{
+    int16_t derived[2] = {0, 0};
+
+    avc_mb_predict_mv(partition, partition_width, partition_height, a, b, c,
+                      derived);
+    if (mv_pred) {
+        mv_pred[0] = derived[0];
+        mv_pred[1] = derived[1];
+    }
+    if (mv) {
+        mv[0] = derived[0];
+        mv[1] = derived[1];
+    }
+}
+
 avc_i_mb_type_info_t avc_i_mb_type_classify(uint32_t mb_type)
 {
     avc_i_mb_type_info_t info;

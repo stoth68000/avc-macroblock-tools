@@ -1233,6 +1233,78 @@ static unsigned direct_spatial_ref_idx_geometry(const avc_mb_pred_event_t *pred,
     return ref_idx;
 }
 
+static void derive_direct_spatial_mv_l0_geometry(avc_mb_pred_event_t *pred,
+                                                 unsigned partition,
+                                                 const avc_mb_state_t *left,
+                                                 const avc_mb_state_t *top,
+                                                 const avc_mb_state_t *top_right,
+                                                 const avc_mb_state_t *top_left)
+{
+    avc_mv_candidate_t cand_a;
+    avc_mv_candidate_t cand_b;
+    avc_mv_candidate_t cand_c;
+    int16_t a[2] = {0, 0};
+    int16_t b[2] = {0, 0};
+    int16_t c[2] = {0, 0};
+    unsigned ref_idx;
+    int have_a;
+    int have_b;
+    int have_c;
+
+    if (!pred || partition >= pred->partition_count ||
+        (pred->list_mask[partition] & 1u) == 0) {
+        return;
+    }
+    ref_idx = pred->ref_idx_l0[partition];
+    geometry_candidates(pred, partition, left, top, top_right, top_left,
+                        &cand_a, &cand_b, &cand_c);
+    have_a = candidate_mv_l0(cand_a, ref_idx, a);
+    have_b = candidate_mv_l0(cand_b, ref_idx, b);
+    have_c = candidate_mv_l0(cand_c, ref_idx, c);
+    avc_mb_derive_direct_spatial_mv(
+        partition, pred->partition_width[partition], pred->partition_height[partition],
+        (avc_mv_predictor_candidate_t){have_a, {a[0], a[1]}},
+        (avc_mv_predictor_candidate_t){have_b, {b[0], b[1]}},
+        (avc_mv_predictor_candidate_t){have_c, {c[0], c[1]}},
+        pred->mv_pred_l0[partition], pred->mv_l0[partition]);
+}
+
+static void derive_direct_spatial_mv_l1_geometry(avc_mb_pred_event_t *pred,
+                                                 unsigned partition,
+                                                 const avc_mb_state_t *left,
+                                                 const avc_mb_state_t *top,
+                                                 const avc_mb_state_t *top_right,
+                                                 const avc_mb_state_t *top_left)
+{
+    avc_mv_candidate_t cand_a;
+    avc_mv_candidate_t cand_b;
+    avc_mv_candidate_t cand_c;
+    int16_t a[2] = {0, 0};
+    int16_t b[2] = {0, 0};
+    int16_t c[2] = {0, 0};
+    unsigned ref_idx;
+    int have_a;
+    int have_b;
+    int have_c;
+
+    if (!pred || partition >= pred->partition_count ||
+        (pred->list_mask[partition] & 2u) == 0) {
+        return;
+    }
+    ref_idx = pred->ref_idx_l1[partition];
+    geometry_candidates(pred, partition, left, top, top_right, top_left,
+                        &cand_a, &cand_b, &cand_c);
+    have_a = candidate_mv_l1(cand_a, ref_idx, a);
+    have_b = candidate_mv_l1(cand_b, ref_idx, b);
+    have_c = candidate_mv_l1(cand_c, ref_idx, c);
+    avc_mb_derive_direct_spatial_mv(
+        partition, pred->partition_width[partition], pred->partition_height[partition],
+        (avc_mv_predictor_candidate_t){have_a, {a[0], a[1]}},
+        (avc_mv_predictor_candidate_t){have_b, {b[0], b[1]}},
+        (avc_mv_predictor_candidate_t){have_c, {c[0], c[1]}},
+        pred->mv_pred_l1[partition], pred->mv_l1[partition]);
+}
+
 static void derive_direct_partition_geometry(avc_mb_pred_event_t *pred,
                                              unsigned partition,
                                              const avc_slice_header_t *slice,
@@ -1271,8 +1343,8 @@ static void derive_direct_partition_geometry(avc_mb_pred_event_t *pred,
     pred->ref_idx_l1[partition] =
         direct_spatial_ref_idx_geometry(pred, partition, left, top, top_right,
                                         top_left, 2);
-    derive_partition_mv_l0_geometry(pred, partition, left, top, top_right, top_left);
-    derive_partition_mv_l1_geometry(pred, partition, left, top, top_right, top_left);
+    derive_direct_spatial_mv_l0_geometry(pred, partition, left, top, top_right, top_left);
+    derive_direct_spatial_mv_l1_geometry(pred, partition, left, top, top_right, top_left);
 }
 
 static int cabac_parse_intra_mb_pred(avc_cabac_decoder_t *cabac,

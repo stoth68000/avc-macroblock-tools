@@ -103,6 +103,25 @@ static void assert_direct_ref(avc_direct_spatial_candidate_t a,
     assert(ref == expected_ref);
 }
 
+static void assert_direct_mv(unsigned partition,
+                             unsigned width,
+                             unsigned height,
+                             avc_mv_predictor_candidate_t a,
+                             avc_mv_predictor_candidate_t b,
+                             avc_mv_predictor_candidate_t c,
+                             int16_t expected_x,
+                             int16_t expected_y)
+{
+    int16_t mv_pred[2] = {-999, -999};
+    int16_t mv[2] = {-999, -999};
+    avc_mb_derive_direct_spatial_mv(partition, width, height, a, b, c,
+                                    mv_pred, mv);
+    assert(mv_pred[0] == expected_x);
+    assert(mv_pred[1] == expected_y);
+    assert(mv[0] == expected_x);
+    assert(mv[1] == expected_y);
+}
+
 int main(void)
 {
     {
@@ -303,6 +322,37 @@ int main(void)
                           2, 0, 0);
         assert_direct_ref(a, b, c, 3, 0, 999);
         assert(!avc_mb_direct_spatial_ref_idx(a, b, c, 1, 0));
+    }
+
+    {
+        int16_t mv[2] = {-999, -999};
+
+        assert_direct_mv(0, 16, 16,
+                         candidate(1, 10, 30),
+                         candidate(1, 40, 10),
+                         candidate(1, 20, 20),
+                         20, 20);
+        assert_direct_mv(0, 16, 16,
+                         candidate(0, 10, 30),
+                         candidate(1, 40, 10),
+                         candidate(0, 20, 20),
+                         40, 10);
+        assert_direct_mv(0, 16, 16,
+                         candidate(0, 10, 30),
+                         candidate(0, 40, 10),
+                         candidate(0, 20, 20),
+                         0, 0);
+        assert_direct_mv(0, 16, 8,
+                         candidate(1, 10, 4),
+                         candidate(1, 20, 8),
+                         candidate(1, 30, 12),
+                         20, 8);
+        avc_mb_derive_direct_spatial_mv(0, 16, 16,
+                                        candidate(1, 10, 4),
+                                        candidate(1, 20, 8),
+                                        candidate(1, 30, 12),
+                                        0, mv);
+        assert(mv[0] == 20 && mv[1] == 8);
     }
 
     return 0;
