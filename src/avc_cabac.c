@@ -1611,21 +1611,39 @@ int avc_cabac_decode_transform_size_8x8_flag(avc_cabac_decoder_t *cabac,
     return avc_cabac_decode_decision(cabac, 399 + ctx_inc);
 }
 
-int avc_cabac_decode_mb_qp_delta(avc_cabac_decoder_t *cabac,
-                                 int previous_mb_qp_delta_nonzero,
-                                 int *mb_qp_delta)
+int avc_cabac_decode_mb_qp_delta_traced(avc_cabac_decoder_t *cabac,
+                                        int previous_mb_qp_delta_nonzero,
+                                        int *mb_qp_delta,
+                                        void (*on_trace)(void *opaque,
+                                                         unsigned prefix,
+                                                         unsigned ctx_idx,
+                                                         int bin,
+                                                         size_t bit_pos,
+                                                         uint32_t cod_i_range,
+                                                         uint32_t cod_i_offset),
+                                        void *opaque)
 {
     unsigned prefix = 0;
     unsigned ctx_idx = avc_cabac_ctx_mb_qp_delta(previous_mb_qp_delta_nonzero);
     unsigned continuation_ctx_idx = 62;
+    int bin;
 
-    if (avc_cabac_decode_decision(cabac, ctx_idx) == 0) {
+    bin = avc_cabac_decode_decision(cabac, ctx_idx);
+    if (on_trace) {
+        on_trace(opaque, prefix, ctx_idx, bin, cabac->bit_pos,
+                 cabac->cod_i_range, cabac->cod_i_offset);
+    }
+    if (bin == 0) {
         *mb_qp_delta = 0;
         return !cabac->error;
     }
     prefix = 1;
     while (prefix < 128) {
-        int bin = avc_cabac_decode_decision(cabac, continuation_ctx_idx);
+        bin = avc_cabac_decode_decision(cabac, continuation_ctx_idx);
+        if (on_trace) {
+            on_trace(opaque, prefix, continuation_ctx_idx, bin, cabac->bit_pos,
+                     cabac->cod_i_range, cabac->cod_i_offset);
+        }
         if (cabac->error) {
             return 0;
         }
@@ -1638,6 +1656,14 @@ int avc_cabac_decode_mb_qp_delta(avc_cabac_decoder_t *cabac,
     }
     cabac->error = 1;
     return 0;
+}
+
+int avc_cabac_decode_mb_qp_delta(avc_cabac_decoder_t *cabac,
+                                 int previous_mb_qp_delta_nonzero,
+                                 int *mb_qp_delta)
+{
+    return avc_cabac_decode_mb_qp_delta_traced(cabac, previous_mb_qp_delta_nonzero,
+                                               mb_qp_delta, NULL, NULL);
 }
 
 int avc_cabac_decode_prev_intra_pred_mode_flag(avc_cabac_decoder_t *cabac)

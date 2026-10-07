@@ -99,6 +99,17 @@ int avc_cabac_decode_coded_block_pattern_chroma(avc_cabac_decoder_t *cabac,
 int avc_cabac_decode_mb_qp_delta(avc_cabac_decoder_t *cabac,
                                  int previous_mb_qp_delta_nonzero,
                                  int *mb_qp_delta);
+int avc_cabac_decode_mb_qp_delta_traced(avc_cabac_decoder_t *cabac,
+                                        int previous_mb_qp_delta_nonzero,
+                                        int *mb_qp_delta,
+                                        void (*on_trace)(void *opaque,
+                                                         unsigned prefix,
+                                                         unsigned ctx_idx,
+                                                         int bin,
+                                                         size_t bit_pos,
+                                                         uint32_t cod_i_range,
+                                                         uint32_t cod_i_offset),
+                                        void *opaque);
 int avc_cabac_decode_prev_intra_pred_mode_flag(avc_cabac_decoder_t *cabac);
 int avc_cabac_decode_rem_intra_pred_mode(avc_cabac_decoder_t *cabac,
                                          unsigned *mode);

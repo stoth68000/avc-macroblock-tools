@@ -151,6 +151,53 @@ static void trace_mb(avc_macroblock_callbacks_t callbacks, void *opaque,
     callbacks.on_note(opaque, message);
 }
 
+typedef struct {
+    avc_macroblock_callbacks_t callbacks;
+    void *opaque;
+    uint32_t mb_addr;
+} avc_mb_qp_delta_trace_context_t;
+
+static void trace_mb_qp_delta_bin(void *opaque,
+                                  unsigned prefix,
+                                  unsigned ctx_idx,
+                                  int bin,
+                                  size_t bit_pos,
+                                  uint32_t cod_i_range,
+                                  uint32_t cod_i_offset)
+{
+    avc_mb_qp_delta_trace_context_t *context =
+        (avc_mb_qp_delta_trace_context_t *)opaque;
+    if (!context || !trace_mb_enabled(context->callbacks, context->mb_addr)) {
+        return;
+    }
+    trace_mb(context->callbacks, context->opaque, context->mb_addr,
+             "CABAC trace mb=%u mb_qp_delta bin prefix=%u ctx=%u bin=%d bit=%zu range=%u offset=%u",
+             context->mb_addr, prefix, ctx_idx, bin, bit_pos,
+             cod_i_range, cod_i_offset);
+}
+
+static int decode_mb_qp_delta_with_trace(avc_cabac_decoder_t *cabac,
+                                         int previous_mb_qp_delta_nonzero,
+                                         int *mb_qp_delta,
+                                         avc_macroblock_callbacks_t callbacks,
+                                         void *opaque,
+                                         uint32_t mb_addr)
+{
+    avc_mb_qp_delta_trace_context_t context;
+
+    if (!trace_mb_enabled(callbacks, mb_addr)) {
+        return avc_cabac_decode_mb_qp_delta(cabac, previous_mb_qp_delta_nonzero,
+                                            mb_qp_delta);
+    }
+    context.callbacks = callbacks;
+    context.opaque = opaque;
+    context.mb_addr = mb_addr;
+    return avc_cabac_decode_mb_qp_delta_traced(cabac, previous_mb_qp_delta_nonzero,
+                                               mb_qp_delta,
+                                               trace_mb_qp_delta_bin,
+                                               &context);
+}
+
 static const char *p_mb_shape_name(avc_p_mb_shape_t shape)
 {
     switch (shape) {
@@ -167,6 +214,25 @@ static const char *p_mb_shape_name(avc_p_mb_shape_t shape)
     case AVC_P_MB_INTRA:
         return "P_Intra";
     case AVC_P_MB_UNKNOWN:
+    default:
+        return "unknown";
+    }
+}
+
+static const char *i_pred_kind_name(avc_mb_pred_kind_t kind)
+{
+    switch (kind) {
+    case AVC_MB_PRED_INTRA_4X4:
+        return "Intra_4x4";
+    case AVC_MB_PRED_INTRA_8X8:
+        return "Intra_8x8";
+    case AVC_MB_PRED_INTRA_16X16:
+        return "Intra_16x16";
+    case AVC_MB_PRED_PCM:
+        return "I_PCM";
+    case AVC_MB_PRED_INTER:
+        return "Inter";
+    case AVC_MB_PRED_UNKNOWN:
     default:
         return "unknown";
     }
@@ -3216,6 +3282,7 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                                   const avc_sps_t *sps,
                                   avc_macroblock_callbacks_t callbacks,
                                   void *opaque,
+                                  int recover_i_nonterminal_terminate,
                                   avc_slice_data_summary_t *summary)
 {
     avc_cabac_decoder_t cabac;
@@ -3374,6 +3441,9 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
         prev_mb_skipped = 0;
 
         if (slice->slice_kind == AVC_SLICE_I || slice->slice_kind == AVC_SLICE_SI) {
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u enter I mb_type bit=%zu range=%u offset=%u",
+                     mb_addr, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
             if (!avc_cabac_decode_mb_type_i(&cabac, &event.mb_type)) {
                 notef(callbacks, opaque, "CABAC mb_type I decode failed mb=%u bit=%zu",
                       mb_addr, cabac.bit_pos);
@@ -3381,6 +3451,11 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 return 0;
             }
             i_info = avc_i_mb_type_classify(event.mb_type);
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u exit I mb_type value=%u pred=%s cbp_luma=%u cbp_chroma=%u bit=%zu range=%u offset=%u",
+                     mb_addr, event.mb_type, i_pred_kind_name(i_info.pred_kind),
+                     i_info.cbp_luma, i_info.cbp_chroma,
+                     cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
         } else if (slice->slice_kind == AVC_SLICE_B) {
             if (!avc_cabac_decode_mb_type_b(&cabac,
                                             left && left->available,
@@ -3481,8 +3556,13 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 return !cabac.error;
             }
             if (end_of_slice &&
-                (slice->slice_kind == AVC_SLICE_P || slice->slice_kind == AVC_SLICE_SP ||
+                (recover_i_nonterminal_terminate ||
+                 slice->slice_kind == AVC_SLICE_P || slice->slice_kind == AVC_SLICE_SP ||
                  slice->slice_kind == AVC_SLICE_B)) {
+                trace_mb(callbacks, opaque, mb_addr - 1u,
+                         "CABAC trace mb=%u nonterminal end_of_slice_flag=1 slice_kind=%u bit=%zu range=%u offset=%u",
+                         mb_addr - 1u, slice->slice_kind, cabac.bit_pos,
+                         cabac.cod_i_range, cabac.cod_i_offset);
                 avc_cabac_continue_after_nonterminal_terminate(&cabac);
             }
             continue;
@@ -3492,6 +3572,11 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
             i_info.pred_kind == AVC_MB_PRED_INTRA_8X8 ||
             i_info.pred_kind == AVC_MB_PRED_INTRA_16X16) {
             if (pps->transform_8x8_mode_flag && i_info.pred_kind == AVC_MB_PRED_INTRA_4X4) {
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u enter intra transform_size_8x8_flag left=%d top=%d bit=%zu range=%u offset=%u",
+                         mb_addr, left ? left->transform_size_8x8_flag : 0,
+                         top ? top->transform_size_8x8_flag : 0,
+                         cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
                 event.transform_size_8x8_flag =
                     avc_cabac_decode_transform_size_8x8_flag(&cabac,
                                                              left ? left->transform_size_8x8_flag : 0,
@@ -3503,9 +3588,18 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                     free(states);
                     return 0;
                 }
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u exit intra transform_size_8x8_flag value=%d bit=%zu range=%u offset=%u",
+                         mb_addr, event.transform_size_8x8_flag, cabac.bit_pos,
+                         cabac.cod_i_range, cabac.cod_i_offset);
                 if (event.transform_size_8x8_flag) {
                     i_info.pred_kind = AVC_MB_PRED_INTRA_8X8;
                 }
+            } else {
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u intra transform_size_8x8_flag not present transform_8x8_mode_flag=%u pred=%s",
+                         mb_addr, pps->transform_8x8_mode_flag,
+                         i_pred_kind_name(i_info.pred_kind));
             }
             if (!cabac_parse_intra_mb_pred(&cabac, mb_addr, i_info, callbacks, opaque)) {
                 notef(callbacks, opaque, "CABAC intra mb_pred failed mb=%u mb_type=%u bit=%zu",
@@ -3513,7 +3607,18 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 free(states);
                 return 0;
             }
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u exit intra mb_pred pred=%s bit=%zu range=%u offset=%u",
+                     mb_addr, i_pred_kind_name(i_info.pred_kind),
+                     cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
             if (i_info.pred_kind == AVC_MB_PRED_INTRA_4X4 || i_info.pred_kind == AVC_MB_PRED_INTRA_8X8) {
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u enter intra coded_block_pattern_luma left_available=%d left_cbp_luma=%u top_available=%d top_cbp_luma=%u bit=%zu range=%u offset=%u",
+                         mb_addr, left && left->available,
+                         left ? left->coded_block_pattern_luma : 0,
+                         top && top->available,
+                         top ? top->coded_block_pattern_luma : 0,
+                         cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
                 if (!avc_cabac_decode_coded_block_pattern_luma(&cabac,
                                                                left && left->available,
                                                                left ? left->coded_block_pattern_luma : 0,
@@ -3526,6 +3631,17 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                     free(states);
                     return 0;
                 }
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u exit intra coded_block_pattern_luma value=%u bit=%zu range=%u offset=%u",
+                         mb_addr, event.coded_block_pattern_luma, cabac.bit_pos,
+                         cabac.cod_i_range, cabac.cod_i_offset);
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u enter intra coded_block_pattern_chroma left_available=%d left_cbp_chroma=%u top_available=%d top_cbp_chroma=%u bit=%zu range=%u offset=%u",
+                         mb_addr, left && left->available,
+                         left ? left->coded_block_pattern_chroma : 0,
+                         top && top->available,
+                         top ? top->coded_block_pattern_chroma : 0,
+                         cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
                 if (!avc_cabac_decode_coded_block_pattern_chroma(&cabac,
                                                                  left && left->available,
                                                                  left ? left->coded_block_pattern_chroma : 0,
@@ -3538,20 +3654,41 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                     free(states);
                     return 0;
                 }
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u exit intra coded_block_pattern_chroma value=%u bit=%zu range=%u offset=%u",
+                         mb_addr, event.coded_block_pattern_chroma, cabac.bit_pos,
+                         cabac.cod_i_range, cabac.cod_i_offset);
             } else {
                 event.coded_block_pattern_luma = i_info.cbp_luma;
                 event.coded_block_pattern_chroma = i_info.cbp_chroma;
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u intra coded_block_pattern from mb_type cbp_luma=%u cbp_chroma=%u",
+                         mb_addr, event.coded_block_pattern_luma,
+                         event.coded_block_pattern_chroma);
             }
+            trace_mb(callbacks, opaque, mb_addr,
+                     "CABAC trace mb=%u mb_qp_delta_present=%d cbp_luma=%u cbp_chroma=%u pred=%s prev_mb_qp_delta_nonzero=%d bit=%zu range=%u offset=%u",
+                     mb_addr,
+                     (event.coded_block_pattern_luma || event.coded_block_pattern_chroma ||
+                      i_info.pred_kind == AVC_MB_PRED_INTRA_16X16) ? 1 : 0,
+                     event.coded_block_pattern_luma, event.coded_block_pattern_chroma,
+                     i_pred_kind_name(i_info.pred_kind), prev_mb_qp_delta_nonzero,
+                     cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
             if (event.coded_block_pattern_luma || event.coded_block_pattern_chroma ||
                 i_info.pred_kind == AVC_MB_PRED_INTRA_16X16) {
-                if (!avc_cabac_decode_mb_qp_delta(&cabac, prev_mb_qp_delta_nonzero,
-                                                  &event.mb_qp_delta)) {
+                if (!decode_mb_qp_delta_with_trace(&cabac, prev_mb_qp_delta_nonzero,
+                                                   &event.mb_qp_delta,
+                                                   callbacks, opaque, mb_addr)) {
                     notef(callbacks, opaque,
                           "CABAC mb_qp_delta decode failed mb=%u mb_type=%u bit=%zu",
                           mb_addr, event.mb_type, cabac.bit_pos);
                     free(states);
                     return 0;
                 }
+                trace_mb(callbacks, opaque, mb_addr,
+                         "CABAC trace mb=%u exit mb_qp_delta value=%d bit=%zu range=%u offset=%u",
+                         mb_addr, event.mb_qp_delta, cabac.bit_pos,
+                         cabac.cod_i_range, cabac.cod_i_offset);
             }
         } else if (p_info.shape == AVC_P_MB_L0_16X16 ||
                    p_info.shape == AVC_P_MB_L0_L0_16X8 ||
@@ -3662,8 +3799,9 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                      prev_mb_qp_delta_nonzero, cabac.bit_pos,
                      cabac.cod_i_range, cabac.cod_i_offset);
             if (event.coded_block_pattern_luma || event.coded_block_pattern_chroma) {
-                if (!avc_cabac_decode_mb_qp_delta(&cabac, prev_mb_qp_delta_nonzero,
-                                                  &event.mb_qp_delta)) {
+                if (!decode_mb_qp_delta_with_trace(&cabac, prev_mb_qp_delta_nonzero,
+                                                   &event.mb_qp_delta,
+                                                   callbacks, opaque, mb_addr)) {
                     notef(callbacks, opaque,
                           "CABAC mb_qp_delta decode failed mb=%u mb_type=%u bit=%zu",
                           mb_addr, event.mb_type, cabac.bit_pos);
@@ -3740,8 +3878,9 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                 }
             }
             if (event.coded_block_pattern_luma || event.coded_block_pattern_chroma) {
-                if (!avc_cabac_decode_mb_qp_delta(&cabac, prev_mb_qp_delta_nonzero,
-                                                  &event.mb_qp_delta)) {
+                if (!decode_mb_qp_delta_with_trace(&cabac, prev_mb_qp_delta_nonzero,
+                                                   &event.mb_qp_delta,
+                                                   callbacks, opaque, mb_addr)) {
                     notef(callbacks, opaque,
                           "CABAC mb_qp_delta decode failed mb=%u mb_type=%u bit=%zu",
                           mb_addr, event.mb_type, cabac.bit_pos);
@@ -3882,11 +4021,13 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
                     free(states);
                     return 1;
                 }
-                if (slice->slice_kind == AVC_SLICE_P || slice->slice_kind == AVC_SLICE_SP ||
+                trace_mb(callbacks, opaque, mb_addr - 1u,
+                         "CABAC trace mb=%u nonterminal end_of_slice_flag=1 slice_kind=%u bit=%zu range=%u offset=%u",
+                         mb_addr - 1u, slice->slice_kind, cabac.bit_pos,
+                         cabac.cod_i_range, cabac.cod_i_offset);
+                if (recover_i_nonterminal_terminate ||
+                    slice->slice_kind == AVC_SLICE_P || slice->slice_kind == AVC_SLICE_SP ||
                     slice->slice_kind == AVC_SLICE_B) {
-                    trace_mb(callbacks, opaque, mb_addr - 1u,
-                             "CABAC trace mb=%u nonterminal end_of_slice_flag=1 bit=%zu range=%u offset=%u",
-                             mb_addr - 1u, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
                     avc_cabac_continue_after_nonterminal_terminate(&cabac);
                 }
             }
@@ -3952,7 +4093,22 @@ int avc_parse_slice_data(const uint8_t *rbsp, size_t rbsp_size,
     br.bit_pos = slice->header_bits;
 
     if (pps->entropy_coding_mode_flag) {
-        return parse_cabac_slice_data(&br, slice, pps, sps, callbacks, opaque, summary);
+        if (slice->slice_kind == AVC_SLICE_I || slice->slice_kind == AVC_SLICE_SI) {
+            avc_bitreader_t probe_br = br;
+            avc_slice_data_summary_t probe_summary;
+            avc_macroblock_callbacks_t probe_callbacks = {0};
+            if (parse_cabac_slice_data(&probe_br, slice, pps, sps,
+                                       probe_callbacks, NULL, 0,
+                                       &probe_summary)) {
+                return parse_cabac_slice_data(&br, slice, pps, sps,
+                                              callbacks, opaque, 0, summary);
+            }
+        }
+        return parse_cabac_slice_data(&br, slice, pps, sps,
+                                      callbacks, opaque,
+                                      (slice->slice_kind == AVC_SLICE_I ||
+                                       slice->slice_kind == AVC_SLICE_SI),
+                                      summary);
     }
     return parse_cavlc_slice_data(&br, slice, pps, sps, callbacks, opaque, summary);
 }
