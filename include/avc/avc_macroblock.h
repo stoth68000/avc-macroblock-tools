@@ -88,6 +88,17 @@ typedef struct {
     uint8_t rem_intra_pred_mode[16];
 } avc_mb_pred_event_t;
 
+typedef struct {
+    int left_available;
+    int top_available;
+    int top_right_available;
+    int top_left_available;
+    uint32_t left;
+    uint32_t top;
+    uint32_t top_right;
+    uint32_t top_left;
+} avc_mb_neighbor_addresses_t;
+
 typedef enum {
     AVC_RESIDUAL_LUMA_4X4 = 0,
     AVC_RESIDUAL_LUMA_8X8 = 1,
@@ -141,6 +152,21 @@ typedef struct {
     int picture_complete;
 } avc_slice_data_summary_t;
 
+int avc_mb_neighbor_addresses(uint32_t pic_size_in_mbs,
+                              uint32_t pic_width_in_mbs,
+                              uint32_t mb_address,
+                              avc_mb_neighbor_addresses_t *neighbors);
+int avc_mb_pred_partition_at(const avc_mb_pred_event_t *pred,
+                             unsigned x,
+                             unsigned y,
+                             unsigned *partition);
+int avc_mb_pred_sub_partition_position(const avc_mb_pred_event_t *pred,
+                                       unsigned partition,
+                                       unsigned sub_partition,
+                                       unsigned *x,
+                                       unsigned *y,
+                                       unsigned *width,
+                                       unsigned *height);
 int avc_parse_slice_data(const uint8_t *rbsp, size_t rbsp_size,
                          const avc_slice_header_t *slice,
                          const avc_parameter_sets_t *sets,

@@ -318,26 +318,26 @@ static void neighbor_states4(avc_mb_state_t *states, uint32_t count, uint32_t wi
                              const avc_mb_state_t **top_right,
                              const avc_mb_state_t **top_left)
 {
-    uint32_t col = width ? address % width : 0;
+    avc_mb_neighbor_addresses_t neighbors;
 
     *left = NULL;
     *top = NULL;
     *top_right = NULL;
     *top_left = NULL;
-    if (width == 0) {
+    if (!avc_mb_neighbor_addresses(count, width, address, &neighbors)) {
         return;
     }
-    if (address > 0 && col != 0) {
-        *left = state_for(states, count, address - 1);
+    if (neighbors.left_available) {
+        *left = state_for(states, count, neighbors.left);
     }
-    if (address >= width) {
-        *top = state_for(states, count, address - width);
-        if (col + 1u < width) {
-            *top_right = state_for(states, count, address - width + 1u);
-        }
-        if (col > 0) {
-            *top_left = state_for(states, count, address - width - 1u);
-        }
+    if (neighbors.top_available) {
+        *top = state_for(states, count, neighbors.top);
+    }
+    if (neighbors.top_right_available) {
+        *top_right = state_for(states, count, neighbors.top_right);
+    }
+    if (neighbors.top_left_available) {
+        *top_left = state_for(states, count, neighbors.top_left);
     }
 }
 
@@ -790,22 +790,12 @@ static void sub_partition_position(const avc_mb_pred_event_t *pred,
                                    unsigned *width,
                                    unsigned *height)
 {
-    unsigned sub_width = pred->sub_partition_width[partition];
-    unsigned sub_height = pred->sub_partition_height[partition];
-    unsigned col_count;
-
-    if (sub_width == 0 || sub_height == 0) {
-        sub_width = pred->partition_width[partition];
-        sub_height = pred->partition_height[partition];
+    if (!avc_mb_pred_sub_partition_position(pred, partition, sub, x, y, width, height)) {
+        *x = 0;
+        *y = 0;
+        *width = 0;
+        *height = 0;
     }
-    col_count = sub_width ? pred->partition_width[partition] / sub_width : 1u;
-    if (col_count == 0) {
-        col_count = 1;
-    }
-    *x = pred->partition_x[partition] + (sub % col_count) * sub_width;
-    *y = pred->partition_y[partition] + (sub / col_count) * sub_height;
-    *width = sub_width;
-    *height = sub_height;
 }
 
 static int16_t median_i16(int16_t a, int16_t b, int16_t c)
@@ -871,31 +861,7 @@ static int pred_partition_at(const avc_mb_pred_event_t *pred,
                              unsigned y,
                              unsigned *partition)
 {
-    unsigned i;
-
-    if (!pred || pred->kind != AVC_MB_PRED_INTER || pred->partition_count == 0 ||
-        x >= 16 || y >= 16) {
-        return 0;
-    }
-    for (i = 0; i < pred->partition_count && i < AVC_MB_PRED_MAX_PARTITIONS; i++) {
-        unsigned px = pred->partition_x[i];
-        unsigned py = pred->partition_y[i];
-        unsigned pw = pred->partition_width[i];
-        unsigned ph = pred->partition_height[i];
-
-        if (pw == 0 || ph == 0) {
-            continue;
-        }
-        if (x >= px && x < px + pw && y >= py && y < py + ph) {
-            *partition = i;
-            return 1;
-        }
-    }
-    if (pred->partition_count == 1) {
-        *partition = 0;
-        return 1;
-    }
-    return 0;
+    return avc_mb_pred_partition_at(pred, x, y, partition);
 }
 
 static avc_mv_candidate_t current_candidate_at(const avc_mb_pred_event_t *pred,

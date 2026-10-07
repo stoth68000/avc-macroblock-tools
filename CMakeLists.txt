@@ -36,6 +36,9 @@ target_link_libraries(test_bitreader PRIVATE avcprobe)
 add_executable(test_entropy tests/test_entropy.c)
 target_link_libraries(test_entropy PRIVATE avcprobe)
 
+add_executable(test_prediction tests/test_prediction.c)
+target_link_libraries(test_prediction PRIVATE avcprobe)
+
 add_executable(test_dpb tests/test_dpb.c)
 target_link_libraries(test_dpb PRIVATE avcprobe)
 
@@ -48,6 +51,7 @@ target_link_libraries(test_sei PRIVATE avcprobe)
 enable_testing()
 add_test(NAME bitreader COMMAND test_bitreader)
 add_test(NAME entropy COMMAND test_entropy)
+add_test(NAME prediction COMMAND test_prediction)
 add_test(NAME dpb COMMAND test_dpb)
 add_test(NAME syntax COMMAND test_syntax)
 add_test(NAME sei COMMAND test_sei)

@@ -1,5 +1,123 @@
 #include "avc_macroblock_types.h"
 
+int avc_mb_neighbor_addresses(uint32_t pic_size_in_mbs,
+                              uint32_t pic_width_in_mbs,
+                              uint32_t mb_address,
+                              avc_mb_neighbor_addresses_t *neighbors)
+{
+    uint32_t col;
+
+    if (!neighbors) {
+        return 0;
+    }
+    *neighbors = (avc_mb_neighbor_addresses_t){0};
+    if (pic_width_in_mbs == 0 || mb_address >= pic_size_in_mbs) {
+        return 0;
+    }
+
+    col = mb_address % pic_width_in_mbs;
+    if (mb_address > 0 && col != 0) {
+        neighbors->left_available = 1;
+        neighbors->left = mb_address - 1u;
+    }
+    if (mb_address >= pic_width_in_mbs) {
+        neighbors->top_available = 1;
+        neighbors->top = mb_address - pic_width_in_mbs;
+        if (col + 1u < pic_width_in_mbs &&
+            mb_address - pic_width_in_mbs + 1u < pic_size_in_mbs) {
+            neighbors->top_right_available = 1;
+            neighbors->top_right = mb_address - pic_width_in_mbs + 1u;
+        }
+        if (col > 0) {
+            neighbors->top_left_available = 1;
+            neighbors->top_left = mb_address - pic_width_in_mbs - 1u;
+        }
+    }
+    return 1;
+}
+
+int avc_mb_pred_partition_at(const avc_mb_pred_event_t *pred,
+                             unsigned x,
+                             unsigned y,
+                             unsigned *partition)
+{
+    unsigned i;
+
+    if (!partition || !pred || pred->kind != AVC_MB_PRED_INTER ||
+        pred->partition_count == 0 || x >= 16 || y >= 16) {
+        return 0;
+    }
+    for (i = 0; i < pred->partition_count && i < AVC_MB_PRED_MAX_PARTITIONS; i++) {
+        unsigned px = pred->partition_x[i];
+        unsigned py = pred->partition_y[i];
+        unsigned pw = pred->partition_width[i];
+        unsigned ph = pred->partition_height[i];
+
+        if (pw == 0 || ph == 0) {
+            continue;
+        }
+        if (x >= px && x < px + pw && y >= py && y < py + ph) {
+            *partition = i;
+            return 1;
+        }
+    }
+    if (pred->partition_count == 1) {
+        *partition = 0;
+        return 1;
+    }
+    return 0;
+}
+
+int avc_mb_pred_sub_partition_position(const avc_mb_pred_event_t *pred,
+                                       unsigned partition,
+                                       unsigned sub_partition,
+                                       unsigned *x,
+                                       unsigned *y,
+                                       unsigned *width,
+                                       unsigned *height)
+{
+    unsigned sub_width;
+    unsigned sub_height;
+    unsigned col_count;
+    unsigned row_count;
+    unsigned sub_count;
+
+    if (!pred || !x || !y || !width || !height ||
+        partition >= pred->partition_count ||
+        partition >= AVC_MB_PRED_MAX_PARTITIONS) {
+        return 0;
+    }
+
+    sub_width = pred->sub_partition_width[partition];
+    sub_height = pred->sub_partition_height[partition];
+    if (sub_width == 0 || sub_height == 0) {
+        sub_width = pred->partition_width[partition];
+        sub_height = pred->partition_height[partition];
+    }
+    if (sub_width == 0 || sub_height == 0 ||
+        pred->partition_width[partition] == 0 ||
+        pred->partition_height[partition] == 0) {
+        return 0;
+    }
+
+    col_count = pred->partition_width[partition] / sub_width;
+    row_count = pred->partition_height[partition] / sub_height;
+    if (col_count == 0 || row_count == 0) {
+        return 0;
+    }
+    sub_count = pred->sub_partition_count[partition] ?
+        pred->sub_partition_count[partition] : col_count * row_count;
+    if (sub_partition >= sub_count || sub_partition >= col_count * row_count) {
+        return 0;
+    }
+
+    *x = pred->partition_x[partition] + (sub_partition % col_count) * sub_width;
+    *y = pred->partition_y[partition] + (sub_partition / col_count) * sub_height;
+    *width = sub_width;
+    *height = sub_height;
+    return 1;
+}
+
 avc_i_mb_type_info_t avc_i_mb_type_classify(uint32_t mb_type)
 {
     avc_i_mb_type_info_t info;
