@@ -5,6 +5,7 @@
 #include "avc/avc_syntax.h"
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct {
@@ -31,6 +32,19 @@ typedef struct {
     unsigned scaling_list_size[32];
     int scaling_list_index[32];
 } residual_trace_t;
+
+typedef struct {
+    const char *bits;
+    unsigned max_coeff;
+    unsigned total_coeff;
+    unsigned expected;
+} total_zeros_case_t;
+
+typedef struct {
+    const char *bits;
+    unsigned zeros_left;
+    unsigned expected;
+} run_before_case_t;
 
 static void bw_put_bit(bit_writer_t *bw, unsigned bit)
 {
@@ -100,6 +114,38 @@ static void record_residual(void *opaque, const avc_residual_event_t *residual)
     trace->scaling_list_size[trace->count] = residual->scaling_list_size;
     trace->scaling_list_index[trace->count] = residual->scaling_list_index;
     trace->count++;
+}
+
+static void assert_total_zeros_case(const total_zeros_case_t *tc)
+{
+    bit_writer_t bw = {{0}, 0};
+    avc_bitreader_t br;
+    unsigned value = 999u;
+
+    bw_put_bits(&bw, tc->bits);
+    avc_br_init(&br, bw.data, sizeof(bw.data));
+    assert(avc_cavlc_read_total_zeros(&br, tc->max_coeff, tc->total_coeff, &value));
+    if (value != tc->expected) {
+        fprintf(stderr, "total_zeros bits=%s max=%u total=%u expected=%u got=%u\n",
+                tc->bits, tc->max_coeff, tc->total_coeff, tc->expected, value);
+    }
+    assert(value == tc->expected);
+}
+
+static void assert_run_before_case(const run_before_case_t *tc)
+{
+    bit_writer_t bw = {{0}, 0};
+    avc_bitreader_t br;
+    unsigned value = 999u;
+
+    bw_put_bits(&bw, tc->bits);
+    avc_br_init(&br, bw.data, sizeof(bw.data));
+    assert(avc_cavlc_read_run_before(&br, tc->zeros_left, &value));
+    if (value != tc->expected) {
+        fprintf(stderr, "run_before bits=%s zeros_left=%u expected=%u got=%u\n",
+                tc->bits, tc->zeros_left, tc->expected, value);
+    }
+    assert(value == tc->expected);
 }
 
 int main(void)
@@ -181,6 +227,61 @@ int main(void)
         avc_br_init(&br, level_neg, sizeof(level_neg));
         assert(avc_cavlc_read_level(&br, 0, &level));
         assert(level == -1);
+
+        {
+            const total_zeros_case_t cases[] = {
+                {"1", 16, 1, 0},
+                {"011", 16, 1, 1},
+                {"010", 16, 1, 2},
+                {"000000001", 16, 1, 15},
+                {"101", 16, 2, 2},
+                {"000000", 16, 2, 14},
+                {"011", 16, 4, 8},
+                {"0", 16, 15, 0},
+                {"1", 16, 15, 1},
+                {"1", 4, 1, 0},
+                {"01", 4, 1, 1},
+                {"001", 4, 1, 2},
+                {"000", 4, 1, 3},
+                {"00", 4, 2, 2},
+                {"0", 4, 3, 1},
+                {"0011", 8, 1, 4},
+                {"00000", 8, 1, 7},
+                {"100", 8, 2, 3},
+                {"111", 8, 2, 6},
+                {"01", 8, 5, 1},
+                {"1", 8, 7, 1},
+            };
+            size_t i;
+
+            for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+                assert_total_zeros_case(&cases[i]);
+            }
+        }
+
+        {
+            const run_before_case_t cases[] = {
+                {"1", 0, 0},
+                {"1", 1, 0},
+                {"0", 1, 1},
+                {"01", 2, 1},
+                {"00", 2, 2},
+                {"11", 3, 0},
+                {"00", 3, 3},
+                {"01", 4, 2},
+                {"000", 4, 4},
+                {"001", 5, 4},
+                {"000", 5, 5},
+                {"100", 6, 6},
+                {"00000000001", 7, 14},
+                {"00000000001", 15, 14},
+            };
+            size_t i;
+
+            for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+                assert_run_before_case(&cases[i]);
+            }
+        }
 
         memset(&bw, 0, sizeof(bw));
         bw_put_bits(&bw, "010");
