@@ -162,6 +162,9 @@ typedef struct {
     void (*on_mb_pred)(void *opaque, const avc_mb_pred_event_t *pred);
     void (*on_residual)(void *opaque, const avc_residual_event_t *residual);
     void (*on_note)(void *opaque, const char *message);
+    int trace_enabled;
+    uint32_t trace_first_mb;
+    uint32_t trace_last_mb;
 } avc_macroblock_callbacks_t;
 
 typedef struct {

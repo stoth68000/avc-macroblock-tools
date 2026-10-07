@@ -112,6 +112,14 @@ int avc_cabac_decode_ref_idx_l0(avc_cabac_decoder_t *cabac,
 int avc_cabac_decode_ref_idx_l1(avc_cabac_decoder_t *cabac,
                                 int left_nonzero, int top_nonzero,
                                 unsigned *ref_idx);
+int avc_cabac_decode_ref_idx_l0_bounded(avc_cabac_decoder_t *cabac,
+                                        int left_nonzero, int top_nonzero,
+                                        unsigned max_ref_idx,
+                                        unsigned *ref_idx);
+int avc_cabac_decode_ref_idx_l1_bounded(avc_cabac_decoder_t *cabac,
+                                        int left_nonzero, int top_nonzero,
+                                        unsigned max_ref_idx,
+                                        unsigned *ref_idx);
 int avc_cabac_decode_mvd_component(avc_cabac_decoder_t *cabac,
                                    unsigned ctx_base,
                                    unsigned abs_mvd_left,

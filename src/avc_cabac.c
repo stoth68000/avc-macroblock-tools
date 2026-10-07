@@ -1678,12 +1678,14 @@ int avc_cabac_decode_mb_field_decoding_flag(avc_cabac_decoder_t *cabac,
     return avc_cabac_decode_decision(cabac, 70 + ctx_inc);
 }
 
-int avc_cabac_decode_ref_idx_l0(avc_cabac_decoder_t *cabac,
-                                int left_nonzero, int top_nonzero,
-                                unsigned *ref_idx)
+int avc_cabac_decode_ref_idx_l0_bounded(avc_cabac_decoder_t *cabac,
+                                        int left_nonzero, int top_nonzero,
+                                        unsigned max_ref_idx,
+                                        unsigned *ref_idx)
 {
     unsigned value;
     unsigned ctx_inc = 0;
+    int bin;
 
     /*
      * The spec context helper is exposed and tested above, but the current
@@ -1696,14 +1698,22 @@ int avc_cabac_decode_ref_idx_l0(avc_cabac_decoder_t *cabac,
     if (top_nonzero) {
         ctx_inc++;
     }
-    if (avc_cabac_decode_decision(cabac, 54 + ctx_inc) == 0) {
+    bin = avc_cabac_decode_decision(cabac, 54 + ctx_inc);
+    if (cabac->error) {
+        return 0;
+    }
+    if (bin == 0) {
         *ref_idx = 0;
-        return !cabac->error;
+        return 1;
+    }
+    if (max_ref_idx == 0) {
+        cabac->error = 1;
+        return 0;
     }
 
     value = 1;
-    while (value < 32) {
-        int bin = avc_cabac_decode_decision(cabac, 58);
+    while (value < max_ref_idx) {
+        bin = avc_cabac_decode_decision(cabac, 58);
         if (cabac->error) {
             return 0;
         }
@@ -1713,8 +1723,15 @@ int avc_cabac_decode_ref_idx_l0(avc_cabac_decoder_t *cabac,
         }
         value++;
     }
-    cabac->error = 1;
-    return 0;
+    *ref_idx = value;
+    return 1;
+}
+
+int avc_cabac_decode_ref_idx_l0(avc_cabac_decoder_t *cabac,
+                                int left_nonzero, int top_nonzero,
+                                unsigned *ref_idx)
+{
+    return avc_cabac_decode_ref_idx_l0_bounded(cabac, left_nonzero, top_nonzero, 31, ref_idx);
 }
 
 int avc_cabac_decode_ref_idx_l1(avc_cabac_decoder_t *cabac,
@@ -1722,6 +1739,14 @@ int avc_cabac_decode_ref_idx_l1(avc_cabac_decoder_t *cabac,
                                 unsigned *ref_idx)
 {
     return avc_cabac_decode_ref_idx_l0(cabac, left_nonzero, top_nonzero, ref_idx);
+}
+
+int avc_cabac_decode_ref_idx_l1_bounded(avc_cabac_decoder_t *cabac,
+                                        int left_nonzero, int top_nonzero,
+                                        unsigned max_ref_idx,
+                                        unsigned *ref_idx)
+{
+    return avc_cabac_decode_ref_idx_l0_bounded(cabac, left_nonzero, top_nonzero, max_ref_idx, ref_idx);
 }
 
 int avc_cabac_decode_mvd_component(avc_cabac_decoder_t *cabac,
