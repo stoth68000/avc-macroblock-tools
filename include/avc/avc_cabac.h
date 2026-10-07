@@ -24,6 +24,8 @@ typedef struct {
 typedef struct {
     unsigned max_coeff;
     unsigned total_coeff;
+    uint8_t coded_block_flag_present;
+    uint8_t coded_block_flag;
     unsigned error_index;
     unsigned error_context;
     int error_syntax;

@@ -2063,6 +2063,26 @@ static const avc_cabac_residual_plan_t *residual_plan(avc_residual_kind_t kind)
     return NULL;
 }
 
+static const char *residual_kind_name(avc_residual_kind_t kind)
+{
+    switch (kind) {
+    case AVC_RESIDUAL_LUMA_4X4:
+        return "luma_4x4";
+    case AVC_RESIDUAL_LUMA_8X8:
+        return "luma_8x8";
+    case AVC_RESIDUAL_LUMA_16X16_DC:
+        return "luma_16x16_dc";
+    case AVC_RESIDUAL_LUMA_16X16_AC:
+        return "luma_16x16_ac";
+    case AVC_RESIDUAL_CHROMA_DC:
+        return "chroma_dc";
+    case AVC_RESIDUAL_CHROMA_AC:
+        return "chroma_ac";
+    default:
+        return "unknown";
+    }
+}
+
 static int cabac_fill_coeff_coords(avc_residual_event_t *residual,
                                    unsigned chroma_format,
                                    avc_cavlc_scan_t scan_mode)
@@ -2156,6 +2176,12 @@ static int cabac_emit_residual_block(avc_cabac_decoder_t *cabac,
     max_coeff = max_coeff_override ? max_coeff_override : plan->max_coeff;
     coded_block_flag_present = max_coeff != 64 || chroma_format == 3;
 
+    trace_mb(callbacks, opaque, mb_addr,
+             "CABAC trace mb=%u enter residual kind=%s block=%u max_coeff=%u coded_flag=%d left_coded=%d top_coded=%d bit=%zu range=%u offset=%u",
+             mb_addr, residual_kind_name(kind), block_index, max_coeff,
+             coded_block_flag_present, left_coded, top_coded,
+             cabac->bit_pos, cabac->cod_i_range, cabac->cod_i_offset);
+
     if (!avc_cabac_decode_residual_block(cabac, max_coeff,
                                          plan->ctx_block_cat,
                                          coded_block_flag_present,
@@ -2189,6 +2215,12 @@ static int cabac_emit_residual_block(avc_cabac_decoder_t *cabac,
     if (callbacks.on_residual) {
         callbacks.on_residual(opaque, &residual);
     }
+    trace_mb(callbacks, opaque, mb_addr,
+             "CABAC trace mb=%u exit residual kind=%s block=%u coded_flag_value=%u total_coeff=%u bit=%zu range=%u offset=%u",
+             mb_addr, residual_kind_name(kind), block_index,
+             residual.cabac_block.coded_block_flag,
+             residual.cabac_block.total_coeff, cabac->bit_pos,
+             cabac->cod_i_range, cabac->cod_i_offset);
     return !cabac->error;
 }
 

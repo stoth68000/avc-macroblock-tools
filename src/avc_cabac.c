@@ -2079,9 +2079,13 @@ int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
         return 0;
     }
     block->max_coeff = max_coeff;
+    block->coded_block_flag_present = coded_block_flag_present ? 1u : 0u;
+    block->coded_block_flag = coded_block_flag_present ? 0u : 1u;
 
     if (coded_block_flag_present) {
-        if (!avc_cabac_decode_coded_block_flag(cabac, coded_ctx_base, left_coded, top_coded)) {
+        int coded_block_flag =
+            avc_cabac_decode_coded_block_flag(cabac, coded_ctx_base, left_coded, top_coded);
+        if (!coded_block_flag) {
             if (cabac->error) {
                 block->error_syntax = AVC_CABAC_RESIDUAL_ERROR_CODED_BLOCK_FLAG;
                 block->error_context = coded_ctx_base + avc_cabac_ctx_coded_block_flag(left_coded, top_coded);
@@ -2089,6 +2093,7 @@ int avc_cabac_decode_residual_block(avc_cabac_decoder_t *cabac,
             }
             return 1;
         }
+        block->coded_block_flag = 1u;
     }
 
     for (i = 0; i < max_coeff; i++) {
