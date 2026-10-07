@@ -392,16 +392,8 @@ static void luma4x4_xy_from_index(unsigned index, unsigned *x, unsigned *y)
 static int derive_nc_from_neighbors(int left_available, unsigned left_count,
                                     int top_available, unsigned top_count)
 {
-    if (left_available && top_available) {
-        return (int)((left_count + top_count + 1u) >> 1);
-    }
-    if (left_available) {
-        return (int)left_count;
-    }
-    if (top_available) {
-        return (int)top_count;
-    }
-    return 0;
+    return avc_cavlc_derive_nC_from_neighbors(left_available, left_count,
+                                              top_available, top_count);
 }
 
 static int cavlc_luma_nC(const avc_mb_state_t *curr,

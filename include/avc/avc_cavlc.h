@@ -34,6 +34,15 @@ int avc_cavlc_scan_position(unsigned max_coeff,
                             avc_cavlc_scan_t scan_mode,
                             unsigned *x,
                             unsigned *y);
+int avc_cavlc_read_level(avc_bitreader_t *br, unsigned suffix_length, int *level);
+int avc_cavlc_read_coeff_token(avc_bitreader_t *br, int nC, unsigned max_coeff,
+                               unsigned *total_coeff, unsigned *trailing_ones);
+int avc_cavlc_read_total_zeros(avc_bitreader_t *br, unsigned max_coeff,
+                               unsigned total_coeff, unsigned *total_zeros);
+int avc_cavlc_read_run_before(avc_bitreader_t *br, unsigned zeros_left,
+                              unsigned *run_before);
+int avc_cavlc_derive_nC_from_neighbors(int left_available, unsigned left_count,
+                                       int top_available, unsigned top_count);
 int avc_cavlc_read_residual_block(avc_bitreader_t *br, int nC, unsigned max_coeff,
                                   avc_cavlc_scan_t scan_mode,
                                   avc_cavlc_block_t *block,

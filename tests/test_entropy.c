@@ -105,6 +105,90 @@ static void record_residual(void *opaque, const avc_residual_event_t *residual)
 int main(void)
 {
     {
+        const uint8_t table0_zero[] = {0x80};
+        const uint8_t table1_zero[] = {0xc0};
+        const uint8_t table2_zero[] = {0xf0};
+        const uint8_t table3_zero[] = {0x0c};
+        const uint8_t chroma420_zero[] = {0x40};
+        const uint8_t chroma422_zero[] = {0x80};
+        avc_bitreader_t br;
+        unsigned total_coeff;
+        unsigned trailing_ones;
+
+        avc_br_init(&br, table0_zero, sizeof(table0_zero));
+        assert(avc_cavlc_read_coeff_token(&br, 0, 16, &total_coeff, &trailing_ones));
+        assert(total_coeff == 0);
+        assert(trailing_ones == 0);
+
+        avc_br_init(&br, table1_zero, sizeof(table1_zero));
+        assert(avc_cavlc_read_coeff_token(&br, 2, 16, &total_coeff, &trailing_ones));
+        assert(total_coeff == 0);
+        assert(trailing_ones == 0);
+
+        avc_br_init(&br, table2_zero, sizeof(table2_zero));
+        assert(avc_cavlc_read_coeff_token(&br, 4, 16, &total_coeff, &trailing_ones));
+        assert(total_coeff == 0);
+        assert(trailing_ones == 0);
+
+        avc_br_init(&br, table3_zero, sizeof(table3_zero));
+        assert(avc_cavlc_read_coeff_token(&br, 8, 16, &total_coeff, &trailing_ones));
+        assert(total_coeff == 0);
+        assert(trailing_ones == 0);
+
+        avc_br_init(&br, chroma420_zero, sizeof(chroma420_zero));
+        assert(avc_cavlc_read_coeff_token(&br, 0, 4, &total_coeff, &trailing_ones));
+        assert(total_coeff == 0);
+        assert(trailing_ones == 0);
+
+        avc_br_init(&br, chroma422_zero, sizeof(chroma422_zero));
+        assert(avc_cavlc_read_coeff_token(&br, 0, 8, &total_coeff, &trailing_ones));
+        assert(total_coeff == 0);
+        assert(trailing_ones == 0);
+    }
+
+    {
+        const uint8_t total_zeros_zero[] = {0x80};
+        const uint8_t total_zeros_two[] = {0x40};
+        const uint8_t run_zero[] = {0x80};
+        const uint8_t run_one[] = {0x00};
+        const uint8_t level_pos[] = {0x80};
+        const uint8_t level_neg[] = {0x40};
+        avc_bitreader_t br;
+        unsigned value;
+        int level;
+
+        avc_br_init(&br, total_zeros_zero, sizeof(total_zeros_zero));
+        assert(avc_cavlc_read_total_zeros(&br, 16, 1, &value));
+        assert(value == 0);
+
+        avc_br_init(&br, total_zeros_two, sizeof(total_zeros_two));
+        assert(avc_cavlc_read_total_zeros(&br, 16, 1, &value));
+        assert(value == 2);
+
+        avc_br_init(&br, run_zero, sizeof(run_zero));
+        assert(avc_cavlc_read_run_before(&br, 1, &value));
+        assert(value == 0);
+
+        avc_br_init(&br, run_one, sizeof(run_one));
+        assert(avc_cavlc_read_run_before(&br, 1, &value));
+        assert(value == 1);
+
+        avc_br_init(&br, level_pos, sizeof(level_pos));
+        assert(avc_cavlc_read_level(&br, 0, &level));
+        assert(level == 1);
+
+        avc_br_init(&br, level_neg, sizeof(level_neg));
+        assert(avc_cavlc_read_level(&br, 0, &level));
+        assert(level == -1);
+
+        assert(avc_cavlc_derive_nC_from_neighbors(0, 7, 0, 9) == 0);
+        assert(avc_cavlc_derive_nC_from_neighbors(1, 7, 0, 9) == 7);
+        assert(avc_cavlc_derive_nC_from_neighbors(0, 7, 1, 9) == 9);
+        assert(avc_cavlc_derive_nC_from_neighbors(1, 7, 1, 8) == 8);
+        assert(avc_cavlc_derive_nC_from_neighbors(1, 7, 1, 9) == 8);
+    }
+
+    {
         unsigned x;
         unsigned y;
 

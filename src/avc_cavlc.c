@@ -376,6 +376,70 @@ static int read_run_before(avc_bitreader_t *br, unsigned zeros_left,
                            value_count, run_before);
 }
 
+int avc_cavlc_read_level(avc_bitreader_t *br, unsigned suffix_length, int *level)
+{
+    if (!br || !level || suffix_length > 6u) {
+        if (br) {
+            br->error = 1;
+        }
+        return 0;
+    }
+
+    *level = read_level_suffix(br, suffix_length);
+    return !br->error;
+}
+
+int avc_cavlc_read_coeff_token(avc_bitreader_t *br, int nC, unsigned max_coeff,
+                               unsigned *total_coeff, unsigned *trailing_ones)
+{
+    if (!br || !total_coeff || !trailing_ones) {
+        if (br) {
+            br->error = 1;
+        }
+        return 0;
+    }
+    return read_coeff_token(br, nC, max_coeff, total_coeff, trailing_ones);
+}
+
+int avc_cavlc_read_total_zeros(avc_bitreader_t *br, unsigned max_coeff,
+                               unsigned total_coeff, unsigned *total_zeros)
+{
+    if (!br || !total_zeros) {
+        if (br) {
+            br->error = 1;
+        }
+        return 0;
+    }
+    return read_total_zeros(br, max_coeff, total_coeff, total_zeros);
+}
+
+int avc_cavlc_read_run_before(avc_bitreader_t *br, unsigned zeros_left,
+                              unsigned *run_before)
+{
+    if (!br || !run_before) {
+        if (br) {
+            br->error = 1;
+        }
+        return 0;
+    }
+    return read_run_before(br, zeros_left, run_before);
+}
+
+int avc_cavlc_derive_nC_from_neighbors(int left_available, unsigned left_count,
+                                       int top_available, unsigned top_count)
+{
+    if (left_available && top_available) {
+        return (int)((left_count + top_count + 1u) >> 1);
+    }
+    if (left_available) {
+        return (int)left_count;
+    }
+    if (top_available) {
+        return (int)top_count;
+    }
+    return 0;
+}
+
 int avc_cavlc_scan_position(unsigned max_coeff,
                             unsigned scan,
                             avc_cavlc_scan_t scan_mode,
