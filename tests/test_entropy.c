@@ -154,6 +154,7 @@ int main(void)
         const uint8_t level_pos[] = {0x80};
         const uint8_t level_neg[] = {0x40};
         avc_bitreader_t br;
+        bit_writer_t bw = {{0}, 0};
         unsigned value;
         int level;
 
@@ -180,6 +181,36 @@ int main(void)
         avc_br_init(&br, level_neg, sizeof(level_neg));
         assert(avc_cavlc_read_level(&br, 0, &level));
         assert(level == -1);
+
+        memset(&bw, 0, sizeof(bw));
+        bw_put_bits(&bw, "010");
+        avc_br_init(&br, bw.data, sizeof(bw.data));
+        assert(avc_cavlc_read_level(&br, 1, &level));
+        assert(level == 2);
+
+        memset(&bw, 0, sizeof(bw));
+        bw_put_bits(&bw, "011");
+        avc_br_init(&br, bw.data, sizeof(bw.data));
+        assert(avc_cavlc_read_level(&br, 1, &level));
+        assert(level == -2);
+
+        memset(&bw, 0, sizeof(bw));
+        bw_put_bits(&bw, "00111");
+        avc_br_init(&br, bw.data, sizeof(bw.data));
+        assert(avc_cavlc_read_level(&br, 2, &level));
+        assert(level == -6);
+
+        memset(&bw, 0, sizeof(bw));
+        bw_put_bits(&bw, "0000000000000010000");
+        avc_br_init(&br, bw.data, sizeof(bw.data));
+        assert(avc_cavlc_read_level(&br, 0, &level));
+        assert(level == 8);
+
+        memset(&bw, 0, sizeof(bw));
+        bw_put_bits(&bw, "0000000000000001000000000000");
+        avc_br_init(&br, bw.data, sizeof(bw.data));
+        assert(avc_cavlc_read_level(&br, 0, &level));
+        assert(level == 16);
 
         assert(avc_cavlc_derive_nC_from_neighbors(0, 7, 0, 9) == 0);
         assert(avc_cavlc_derive_nC_from_neighbors(1, 7, 0, 9) == 7);
@@ -313,6 +344,36 @@ int main(void)
         assert(block.coeff_x[1] == 0);
         assert(block.coeff_y[1] == 0);
         assert(block.total_zeros == 0);
+    }
+
+    {
+        const uint8_t neg_pos[] = {0x77};
+        const uint8_t pos_neg[] = {0x6f};
+        const uint8_t neg_neg[] = {0x7f};
+        avc_bitreader_t br;
+        avc_cavlc_block_t block;
+        avc_cavlc_callbacks_t callbacks = {0};
+
+        avc_br_init(&br, neg_pos, sizeof(neg_pos));
+        assert(avc_cavlc_read_residual_block(&br, 2, 16, AVC_CAVLC_SCAN_FRAME, &block, callbacks, NULL));
+        assert(block.total_coeff == 2);
+        assert(block.trailing_ones == 2);
+        assert(block.coeff_level[0] == -1);
+        assert(block.coeff_level[1] == 1);
+
+        avc_br_init(&br, pos_neg, sizeof(pos_neg));
+        assert(avc_cavlc_read_residual_block(&br, 2, 16, AVC_CAVLC_SCAN_FRAME, &block, callbacks, NULL));
+        assert(block.total_coeff == 2);
+        assert(block.trailing_ones == 2);
+        assert(block.coeff_level[0] == 1);
+        assert(block.coeff_level[1] == -1);
+
+        avc_br_init(&br, neg_neg, sizeof(neg_neg));
+        assert(avc_cavlc_read_residual_block(&br, 2, 16, AVC_CAVLC_SCAN_FRAME, &block, callbacks, NULL));
+        assert(block.total_coeff == 2);
+        assert(block.trailing_ones == 2);
+        assert(block.coeff_level[0] == -1);
+        assert(block.coeff_level[1] == -1);
     }
 
     {
