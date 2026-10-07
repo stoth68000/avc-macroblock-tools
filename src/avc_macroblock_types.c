@@ -118,6 +118,69 @@ int avc_mb_pred_sub_partition_position(const avc_mb_pred_event_t *pred,
     return 1;
 }
 
+static int16_t median_i16(int16_t a, int16_t b, int16_t c)
+{
+    if ((a <= b && b <= c) || (c <= b && b <= a)) {
+        return b;
+    }
+    if ((b <= a && a <= c) || (c <= a && a <= b)) {
+        return a;
+    }
+    return c;
+}
+
+void avc_mb_predict_mv(unsigned partition,
+                       unsigned partition_width,
+                       unsigned partition_height,
+                       avc_mv_predictor_candidate_t a,
+                       avc_mv_predictor_candidate_t b,
+                       avc_mv_predictor_candidate_t c,
+                       int16_t mv_pred[2])
+{
+    if (!mv_pred) {
+        return;
+    }
+
+    if (!a.available) {
+        a.mv[0] = 0;
+        a.mv[1] = 0;
+    }
+    if (!b.available) {
+        b.mv[0] = 0;
+        b.mv[1] = 0;
+    }
+    if (!c.available) {
+        c.mv[0] = 0;
+        c.mv[1] = 0;
+    }
+
+    if (partition_width == 16 && partition_height == 8 && partition == 0 && b.available) {
+        mv_pred[0] = b.mv[0];
+        mv_pred[1] = b.mv[1];
+    } else if (partition_width == 16 && partition_height == 8 && partition == 1 && a.available) {
+        mv_pred[0] = a.mv[0];
+        mv_pred[1] = a.mv[1];
+    } else if (partition_width == 8 && partition_height == 16 && partition == 0 && a.available) {
+        mv_pred[0] = a.mv[0];
+        mv_pred[1] = a.mv[1];
+    } else if (partition_width == 8 && partition_height == 16 && partition == 1 && c.available) {
+        mv_pred[0] = c.mv[0];
+        mv_pred[1] = c.mv[1];
+    } else if (a.available && !b.available && !c.available) {
+        mv_pred[0] = a.mv[0];
+        mv_pred[1] = a.mv[1];
+    } else if (!a.available && b.available && !c.available) {
+        mv_pred[0] = b.mv[0];
+        mv_pred[1] = b.mv[1];
+    } else if (!a.available && !b.available && c.available) {
+        mv_pred[0] = c.mv[0];
+        mv_pred[1] = c.mv[1];
+    } else {
+        mv_pred[0] = median_i16(a.mv[0], b.mv[0], c.mv[0]);
+        mv_pred[1] = median_i16(a.mv[1], b.mv[1], c.mv[1]);
+    }
+}
+
 avc_i_mb_type_info_t avc_i_mb_type_classify(uint32_t mb_type)
 {
     avc_i_mb_type_info_t info;

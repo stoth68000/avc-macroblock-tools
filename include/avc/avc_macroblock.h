@@ -99,6 +99,11 @@ typedef struct {
     uint32_t top_left;
 } avc_mb_neighbor_addresses_t;
 
+typedef struct {
+    int available;
+    int16_t mv[2];
+} avc_mv_predictor_candidate_t;
+
 typedef enum {
     AVC_RESIDUAL_LUMA_4X4 = 0,
     AVC_RESIDUAL_LUMA_8X8 = 1,
@@ -167,6 +172,13 @@ int avc_mb_pred_sub_partition_position(const avc_mb_pred_event_t *pred,
                                        unsigned *y,
                                        unsigned *width,
                                        unsigned *height);
+void avc_mb_predict_mv(unsigned partition,
+                       unsigned partition_width,
+                       unsigned partition_height,
+                       avc_mv_predictor_candidate_t a,
+                       avc_mv_predictor_candidate_t b,
+                       avc_mv_predictor_candidate_t c,
+                       int16_t mv_pred[2]);
 int avc_parse_slice_data(const uint8_t *rbsp, size_t rbsp_size,
                          const avc_slice_header_t *slice,
                          const avc_parameter_sets_t *sets,

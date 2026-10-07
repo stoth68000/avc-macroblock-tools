@@ -798,17 +798,6 @@ static void sub_partition_position(const avc_mb_pred_event_t *pred,
     }
 }
 
-static int16_t median_i16(int16_t a, int16_t b, int16_t c)
-{
-    if ((a <= b && b <= c) || (c <= b && b <= a)) {
-        return b;
-    }
-    if ((b <= a && a <= c) || (c <= a && a <= b)) {
-        return a;
-    }
-    return c;
-}
-
 static int neighbor_mv_l0(const avc_mb_state_t *neighbor,
                           unsigned partition,
                           unsigned ref_idx,
@@ -1107,6 +1096,9 @@ static void derive_partition_mv_l0(avc_mb_pred_event_t *pred,
     int have_b;
     int have_c;
     unsigned ref_idx;
+    avc_mv_predictor_candidate_t cand_a;
+    avc_mv_predictor_candidate_t cand_b;
+    avc_mv_predictor_candidate_t cand_c;
 
     if (!pred || partition >= pred->partition_count || (pred->list_mask[partition] & 1u) == 0) {
         return;
@@ -1126,31 +1118,12 @@ static void derive_partition_mv_l0(avc_mb_pred_event_t *pred,
         have_c = neighbor_mv_l0(top_left, top_partition, ref_idx, c);
     }
 
-    if (shape == AVC_P_MB_L0_L0_16X8 && partition == 0 && have_b) {
-        pred->mv_pred_l0[partition][0] = b[0];
-        pred->mv_pred_l0[partition][1] = b[1];
-    } else if (shape == AVC_P_MB_L0_L0_16X8 && partition == 1 && have_a) {
-        pred->mv_pred_l0[partition][0] = a[0];
-        pred->mv_pred_l0[partition][1] = a[1];
-    } else if (shape == AVC_P_MB_L0_L0_8X16 && partition == 0 && have_a) {
-        pred->mv_pred_l0[partition][0] = a[0];
-        pred->mv_pred_l0[partition][1] = a[1];
-    } else if (shape == AVC_P_MB_L0_L0_8X16 && partition == 1 && have_c) {
-        pred->mv_pred_l0[partition][0] = c[0];
-        pred->mv_pred_l0[partition][1] = c[1];
-    } else if (have_a && !have_b && !have_c) {
-        pred->mv_pred_l0[partition][0] = a[0];
-        pred->mv_pred_l0[partition][1] = a[1];
-    } else if (!have_a && have_b && !have_c) {
-        pred->mv_pred_l0[partition][0] = b[0];
-        pred->mv_pred_l0[partition][1] = b[1];
-    } else if (!have_a && !have_b && have_c) {
-        pred->mv_pred_l0[partition][0] = c[0];
-        pred->mv_pred_l0[partition][1] = c[1];
-    } else {
-        pred->mv_pred_l0[partition][0] = median_i16(a[0], b[0], c[0]);
-        pred->mv_pred_l0[partition][1] = median_i16(a[1], b[1], c[1]);
-    }
+    cand_a = (avc_mv_predictor_candidate_t){have_a, {a[0], a[1]}};
+    cand_b = (avc_mv_predictor_candidate_t){have_b, {b[0], b[1]}};
+    cand_c = (avc_mv_predictor_candidate_t){have_c, {c[0], c[1]}};
+    avc_mb_predict_mv(partition, pred->partition_width[partition],
+                      pred->partition_height[partition],
+                      cand_a, cand_b, cand_c, pred->mv_pred_l0[partition]);
     pred->mv_l0[partition][0] = (int16_t)(pred->mv_pred_l0[partition][0] + pred->mvd_l0[partition][0]);
     pred->mv_l0[partition][1] = (int16_t)(pred->mv_pred_l0[partition][1] + pred->mvd_l0[partition][1]);
 }
@@ -1174,6 +1147,9 @@ static void derive_partition_mv_l0_geometry(avc_mb_pred_event_t *pred,
     unsigned ref_idx;
     unsigned width;
     unsigned height;
+    avc_mv_predictor_candidate_t pred_a;
+    avc_mv_predictor_candidate_t pred_b;
+    avc_mv_predictor_candidate_t pred_c;
 
     if (!pred || partition >= pred->partition_count ||
         (pred->list_mask[partition] & 1u) == 0) {
@@ -1188,31 +1164,11 @@ static void derive_partition_mv_l0_geometry(avc_mb_pred_event_t *pred,
     have_b = candidate_mv_l0(cand_b, ref_idx, b);
     have_c = candidate_mv_l0(cand_c, ref_idx, c);
 
-    if (width == 16 && height == 8 && partition == 0 && have_b) {
-        pred->mv_pred_l0[partition][0] = b[0];
-        pred->mv_pred_l0[partition][1] = b[1];
-    } else if (width == 16 && height == 8 && partition == 1 && have_a) {
-        pred->mv_pred_l0[partition][0] = a[0];
-        pred->mv_pred_l0[partition][1] = a[1];
-    } else if (width == 8 && height == 16 && partition == 0 && have_a) {
-        pred->mv_pred_l0[partition][0] = a[0];
-        pred->mv_pred_l0[partition][1] = a[1];
-    } else if (width == 8 && height == 16 && partition == 1 && have_c) {
-        pred->mv_pred_l0[partition][0] = c[0];
-        pred->mv_pred_l0[partition][1] = c[1];
-    } else if (have_a && !have_b && !have_c) {
-        pred->mv_pred_l0[partition][0] = a[0];
-        pred->mv_pred_l0[partition][1] = a[1];
-    } else if (!have_a && have_b && !have_c) {
-        pred->mv_pred_l0[partition][0] = b[0];
-        pred->mv_pred_l0[partition][1] = b[1];
-    } else if (!have_a && !have_b && have_c) {
-        pred->mv_pred_l0[partition][0] = c[0];
-        pred->mv_pred_l0[partition][1] = c[1];
-    } else {
-        pred->mv_pred_l0[partition][0] = median_i16(a[0], b[0], c[0]);
-        pred->mv_pred_l0[partition][1] = median_i16(a[1], b[1], c[1]);
-    }
+    pred_a = (avc_mv_predictor_candidate_t){have_a, {a[0], a[1]}};
+    pred_b = (avc_mv_predictor_candidate_t){have_b, {b[0], b[1]}};
+    pred_c = (avc_mv_predictor_candidate_t){have_c, {c[0], c[1]}};
+    avc_mb_predict_mv(partition, width, height, pred_a, pred_b, pred_c,
+                      pred->mv_pred_l0[partition]);
     pred->mv_l0[partition][0] =
         (int16_t)(pred->mv_pred_l0[partition][0] + pred->mvd_l0[partition][0]);
     pred->mv_l0[partition][1] =
@@ -1238,6 +1194,9 @@ static void derive_partition_mv_l1_geometry(avc_mb_pred_event_t *pred,
     unsigned ref_idx;
     unsigned width;
     unsigned height;
+    avc_mv_predictor_candidate_t pred_a;
+    avc_mv_predictor_candidate_t pred_b;
+    avc_mv_predictor_candidate_t pred_c;
 
     if (!pred || partition >= pred->partition_count ||
         (pred->list_mask[partition] & 2u) == 0) {
@@ -1252,31 +1211,11 @@ static void derive_partition_mv_l1_geometry(avc_mb_pred_event_t *pred,
     have_b = candidate_mv_l1(cand_b, ref_idx, b);
     have_c = candidate_mv_l1(cand_c, ref_idx, c);
 
-    if (width == 16 && height == 8 && partition == 0 && have_b) {
-        pred->mv_pred_l1[partition][0] = b[0];
-        pred->mv_pred_l1[partition][1] = b[1];
-    } else if (width == 16 && height == 8 && partition == 1 && have_a) {
-        pred->mv_pred_l1[partition][0] = a[0];
-        pred->mv_pred_l1[partition][1] = a[1];
-    } else if (width == 8 && height == 16 && partition == 0 && have_a) {
-        pred->mv_pred_l1[partition][0] = a[0];
-        pred->mv_pred_l1[partition][1] = a[1];
-    } else if (width == 8 && height == 16 && partition == 1 && have_c) {
-        pred->mv_pred_l1[partition][0] = c[0];
-        pred->mv_pred_l1[partition][1] = c[1];
-    } else if (have_a && !have_b && !have_c) {
-        pred->mv_pred_l1[partition][0] = a[0];
-        pred->mv_pred_l1[partition][1] = a[1];
-    } else if (!have_a && have_b && !have_c) {
-        pred->mv_pred_l1[partition][0] = b[0];
-        pred->mv_pred_l1[partition][1] = b[1];
-    } else if (!have_a && !have_b && have_c) {
-        pred->mv_pred_l1[partition][0] = c[0];
-        pred->mv_pred_l1[partition][1] = c[1];
-    } else {
-        pred->mv_pred_l1[partition][0] = median_i16(a[0], b[0], c[0]);
-        pred->mv_pred_l1[partition][1] = median_i16(a[1], b[1], c[1]);
-    }
+    pred_a = (avc_mv_predictor_candidate_t){have_a, {a[0], a[1]}};
+    pred_b = (avc_mv_predictor_candidate_t){have_b, {b[0], b[1]}};
+    pred_c = (avc_mv_predictor_candidate_t){have_c, {c[0], c[1]}};
+    avc_mb_predict_mv(partition, width, height, pred_a, pred_b, pred_c,
+                      pred->mv_pred_l1[partition]);
     pred->mv_l1[partition][0] =
         (int16_t)(pred->mv_pred_l1[partition][0] + pred->mvd_l1[partition][0]);
     pred->mv_l1[partition][1] =

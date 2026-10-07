@@ -41,6 +41,30 @@ static avc_mb_pred_event_t make_inter_pred(void)
     return pred;
 }
 
+static avc_mv_predictor_candidate_t candidate(int available, int16_t x, int16_t y)
+{
+    avc_mv_predictor_candidate_t c;
+    c.available = available;
+    c.mv[0] = x;
+    c.mv[1] = y;
+    return c;
+}
+
+static void assert_mvp(unsigned partition,
+                       unsigned width,
+                       unsigned height,
+                       avc_mv_predictor_candidate_t a,
+                       avc_mv_predictor_candidate_t b,
+                       avc_mv_predictor_candidate_t c,
+                       int16_t expected_x,
+                       int16_t expected_y)
+{
+    int16_t mv[2] = {-999, -999};
+    avc_mb_predict_mv(partition, width, height, a, b, c, mv);
+    assert(mv[0] == expected_x);
+    assert(mv[1] == expected_y);
+}
+
 int main(void)
 {
     {
@@ -152,6 +176,48 @@ int main(void)
         assert(avc_mb_pred_sub_partition_position(&pred, 0, 0, &x, &y, &width, &height));
         assert(x == 0 && y == 0 && width == 16 && height == 16);
         assert(!avc_mb_pred_sub_partition_position(&pred, 0, 1, &x, &y, &width, &height));
+    }
+
+    {
+        assert_mvp(0, 16, 16,
+                   candidate(1, 10, 4), candidate(0, 20, 8), candidate(0, 30, 12),
+                   10, 4);
+        assert_mvp(0, 16, 16,
+                   candidate(0, 10, 4), candidate(1, 20, 8), candidate(0, 30, 12),
+                   20, 8);
+        assert_mvp(0, 16, 16,
+                   candidate(0, 10, 4), candidate(0, 20, 8), candidate(1, 30, 12),
+                   30, 12);
+        assert_mvp(0, 16, 16,
+                   candidate(1, 10, 30), candidate(1, 40, 10), candidate(1, 20, 20),
+                   20, 20);
+        assert_mvp(0, 16, 16,
+                   candidate(0, 10, 30), candidate(0, 40, 10), candidate(0, 20, 20),
+                   0, 0);
+    }
+
+    {
+        assert_mvp(0, 16, 8,
+                   candidate(1, 10, 4), candidate(1, 20, 8), candidate(1, 30, 12),
+                   20, 8);
+        assert_mvp(1, 16, 8,
+                   candidate(1, 10, 4), candidate(1, 20, 8), candidate(1, 30, 12),
+                   10, 4);
+        assert_mvp(0, 8, 16,
+                   candidate(1, 10, 4), candidate(1, 20, 8), candidate(1, 30, 12),
+                   10, 4);
+        assert_mvp(1, 8, 16,
+                   candidate(1, 10, 4), candidate(1, 20, 8), candidate(1, 30, 12),
+                   30, 12);
+    }
+
+    {
+        avc_mv_predictor_candidate_t a = candidate(0, 10, 4);
+        avc_mv_predictor_candidate_t b = candidate(1, 20, 8);
+        avc_mv_predictor_candidate_t c = candidate(1, 30, 12);
+
+        assert_mvp(1, 16, 8, a, b, c, 20, 8);
+        assert_mvp(0, 8, 16, a, b, c, 20, 8);
     }
 
     return 0;
