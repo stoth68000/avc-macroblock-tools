@@ -1353,9 +1353,15 @@ int avc_cabac_decode_mb_skip_flag(avc_cabac_decoder_t *cabac, unsigned slice_typ
     return avc_cabac_decode_decision(cabac, ctx_idx + ctx_inc);
 }
 
-int avc_cabac_decode_mb_type_i(avc_cabac_decoder_t *cabac, unsigned *mb_type)
+int avc_cabac_decode_mb_type_i(avc_cabac_decoder_t *cabac,
+                               int left_intra16_or_pcm,
+                               int top_intra16_or_pcm,
+                               unsigned *mb_type)
 {
-    return decode_intra_mb_type(cabac, 3, 1, 0, 0, mb_type);
+    return decode_intra_mb_type(cabac, 3, 1,
+                                left_intra16_or_pcm,
+                                top_intra16_or_pcm,
+                                mb_type);
 }
 
 int avc_cabac_decode_mb_type_p(avc_cabac_decoder_t *cabac, unsigned *mb_type)

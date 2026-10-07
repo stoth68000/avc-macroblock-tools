@@ -58,6 +58,17 @@ static void neighbor_states4(avc_mb_state_t *states, uint32_t count, uint32_t wi
                              const avc_mb_state_t **top_right,
                              const avc_mb_state_t **top_left);
 
+static int state_is_intra16_or_pcm(const avc_mb_state_t *state)
+{
+    avc_i_mb_type_info_t info;
+
+    if (!state || !state->available || state->skipped) {
+        return 0;
+    }
+    info = avc_i_mb_type_classify(state->mb_type);
+    return info.is_pcm || info.pred_kind == AVC_MB_PRED_INTRA_16X16;
+}
+
 static void note(avc_macroblock_callbacks_t callbacks, void *opaque, const char *message)
 {
     if (callbacks.on_note) {
@@ -3784,9 +3795,14 @@ static int parse_cabac_slice_data(avc_bitreader_t *br,
 
         if (slice->slice_kind == AVC_SLICE_I || slice->slice_kind == AVC_SLICE_SI) {
             trace_mb(callbacks, opaque, mb_addr,
-                     "CABAC trace mb=%u enter I mb_type bit=%zu range=%u offset=%u",
-                     mb_addr, cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
-            if (!avc_cabac_decode_mb_type_i(&cabac, &event.mb_type)) {
+                     "CABAC trace mb=%u enter I mb_type left_intra16_or_pcm=%d top_intra16_or_pcm=%d bit=%zu range=%u offset=%u",
+                     mb_addr, state_is_intra16_or_pcm(left),
+                     state_is_intra16_or_pcm(top),
+                     cabac.bit_pos, cabac.cod_i_range, cabac.cod_i_offset);
+            if (!avc_cabac_decode_mb_type_i(&cabac,
+                                            state_is_intra16_or_pcm(left),
+                                            state_is_intra16_or_pcm(top),
+                                            &event.mb_type)) {
                 notef(callbacks, opaque, "CABAC mb_type I decode failed mb=%u bit=%zu",
                       mb_addr, cabac.bit_pos);
                 free(states);

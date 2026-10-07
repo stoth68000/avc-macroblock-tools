@@ -106,7 +106,10 @@ unsigned avc_cabac_ctx_residual_flag(unsigned ctx_block_cat,
 int avc_cabac_decode_mb_skip_flag(avc_cabac_decoder_t *cabac, unsigned slice_type,
                                   int left_available, int left_skipped,
                                   int top_available, int top_skipped);
-int avc_cabac_decode_mb_type_i(avc_cabac_decoder_t *cabac, unsigned *mb_type);
+int avc_cabac_decode_mb_type_i(avc_cabac_decoder_t *cabac,
+                               int left_intra16_or_pcm,
+                               int top_intra16_or_pcm,
+                               unsigned *mb_type);
 int avc_cabac_decode_mb_type_p(avc_cabac_decoder_t *cabac, unsigned *mb_type);
 int avc_cabac_decode_mb_type_b(avc_cabac_decoder_t *cabac,
                                int left_available, int left_direct,

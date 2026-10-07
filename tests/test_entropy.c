@@ -771,7 +771,7 @@ int main(void)
         avc_cabac_init(&cabac, data, sizeof(data));
         assert(!cabac.error);
         assert(avc_cabac_init_contexts(&cabac, 26, 0, 0));
-        assert(avc_cabac_decode_intra_chroma_pred_mode(&cabac, &mode));
+        assert(avc_cabac_decode_intra_chroma_pred_mode(&cabac, 0, 0, 0, 0, &mode));
         assert(mode <= 3);
         assert(avc_cabac_decode_coded_block_pattern_luma(&cabac, 0, 0, 0, 0, &cbp_luma));
         assert(cbp_luma < 16);
